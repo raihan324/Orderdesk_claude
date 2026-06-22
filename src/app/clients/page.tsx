@@ -2,8 +2,10 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { ChevronRight, Building2 } from "lucide-react";
 import { getPrincipal } from "@/lib/auth/session";
+import { can } from "@/lib/auth/rbac";
 import { AppShell } from "@/components/app-shell";
 import { Card, Table, THead, TBody, Th, Td, Badge } from "@/components/ui";
+import { ClientCreateForm } from "@/components/client-create-form";
 import { clientService } from "@/server/services/client.service";
 
 export const dynamic = "force-dynamic";
@@ -17,13 +19,25 @@ export default async function ClientsPage() {
   const reps = await clientService.reps();
   const repName = (id: string | null) => reps.find((r) => r.id === id)?.name ?? "—";
 
+  // Managers/Admins create + assign any rep; Sales Reps create self-owned clients.
+  const canAssign = can(p, "salesrep.assign");
+  const mayCreate = canAssign || p.role === "SALES_REP";
+
   return (
     <AppShell principal={p}>
       <h1 className="text-xl font-semibold tracking-tight">Clients</h1>
       <p className="mt-0.5 text-sm text-slate-500">
         {p.role === "SALES_REP" ? "Only clients assigned to you." : "All B2B companies and B2C individuals."}
       </p>
-      <Card className="mt-5 overflow-hidden">
+
+      {mayCreate && (
+        <Card className="mt-5 p-5">
+          <h3 className="mb-3 text-sm font-semibold text-slate-700">New client</h3>
+          <ClientCreateForm reps={reps} canAssign={canAssign} />
+        </Card>
+      )}
+
+      <Card className="mt-4 overflow-hidden">
         <Table>
           <THead>
             <tr><Th>Name</Th><Th>Type</Th><Th>Account manager</Th><Th /></tr>

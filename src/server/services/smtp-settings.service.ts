@@ -19,9 +19,12 @@ export const updateSmtpSettingsInput = z.object({
 });
 export type UpdateSmtpSettingsInput = z.infer<typeof updateSmtpSettingsInput>;
 
+export type SmtpAuthMethod = "password" | "oauth2_google";
+
 export type SmtpSettingsDTO = {
   id: string;
   userId: string;
+  authMethod: SmtpAuthMethod;
   smtpHost: string;
   smtpPort: number;
   smtpSecure: boolean;
@@ -31,10 +34,16 @@ export type SmtpSettingsDTO = {
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
-  // password is never included in DTOs
+  // secrets (password / refresh token) are never included in DTOs
 };
 
 export type SmtpSettingsWithPassword = SmtpSettingsDTO & { smtpPassword: string };
+
+/** Strip secrets and coerce the auth method into the DTO shape. */
+function toDTO(row: typeof userSmtpSettings.$inferSelect): SmtpSettingsDTO {
+  const { smtpPassword, oauthRefreshToken, authMethod, ...rest } = row;
+  return { ...rest, authMethod: authMethod as SmtpAuthMethod };
+}
 
 export const smtpSettingsService = {
   /**
@@ -48,8 +57,7 @@ export const smtpSettingsService = {
       .limit(1);
 
     if (!row) return null;
-    const { smtpPassword, ...rest } = row;
-    return rest;
+    return toDTO(row);
   },
 
   /**
@@ -63,10 +71,10 @@ export const smtpSettingsService = {
       .where(eq(userSmtpSettings.userId, userId))
       .limit(1);
 
-    if (!row) return null;
+    if (!row || !row.smtpPassword) return null;
     try {
       return {
-        ...row,
+        ...toDTO(row),
         smtpPassword: decrypt(row.smtpPassword),
       };
     } catch {
@@ -94,17 +102,20 @@ export const smtpSettingsService = {
 
     let row;
     if (existing.length > 0) {
-      // Update existing
+      // Update existing — switching to password auth clears any OAuth token.
       [row] = await db
         .update(userSmtpSettings)
         .set({
+          authMethod: "password",
           smtpHost: parsed.smtpHost,
           smtpPort: parsed.smtpPort,
           smtpSecure: parsed.smtpSecure,
           smtpUsername: parsed.smtpUsername,
           smtpPassword: encrypted,
+          oauthRefreshToken: null,
           fromName: parsed.fromName,
           fromEmail: parsed.fromEmail,
+          isActive: true,
           updatedAt: now,
         })
         .where(eq(userSmtpSettings.userId, principal.userId))
@@ -115,6 +126,7 @@ export const smtpSettingsService = {
         .insert(userSmtpSettings)
         .values({
           userId: principal.userId,
+          authMethod: "password",
           smtpHost: parsed.smtpHost,
           smtpPort: parsed.smtpPort,
           smtpSecure: parsed.smtpSecure,
@@ -130,10 +142,87 @@ export const smtpSettingsService = {
     await writeAudit(principal, "smtp_settings_updated", "SMTPSettings", row.id, {
       host: parsed.smtpHost,
       port: parsed.smtpPort,
+      authMethod: "password",
     });
 
-    const { smtpPassword, ...rest } = row;
-    return rest;
+    return toDTO(row);
+  },
+
+  /**
+   * Persist a Google OAuth2 connection for the current user. Stores only an
+   * encrypted refresh token — never a password. Host/port are fixed to Gmail's
+   * SMTP endpoint; the connected address is used as both username and sender.
+   */
+  async saveGoogleOAuth(
+    principal: Principal,
+    input: { refreshToken: string; email: string },
+  ): Promise<SmtpSettingsDTO> {
+    if (principal.kind !== "INTERNAL") throw new Error("FORBIDDEN");
+
+    const encryptedToken = encrypt(input.refreshToken);
+    const email = input.email.toLowerCase();
+    const now = new Date();
+
+    const existing = await db
+      .select({ id: userSmtpSettings.id, fromName: userSmtpSettings.fromName })
+      .from(userSmtpSettings)
+      .where(eq(userSmtpSettings.userId, principal.userId))
+      .limit(1);
+
+    let row;
+    if (existing.length > 0) {
+      [row] = await db
+        .update(userSmtpSettings)
+        .set({
+          authMethod: "oauth2_google",
+          smtpHost: "smtp.gmail.com",
+          smtpPort: 465,
+          smtpSecure: true,
+          smtpUsername: email,
+          smtpPassword: null,
+          oauthRefreshToken: encryptedToken,
+          fromEmail: email,
+          // keep the existing display name if set, else default to the address
+          fromName: existing[0].fromName || email,
+          isActive: true,
+          updatedAt: now,
+        })
+        .where(eq(userSmtpSettings.userId, principal.userId))
+        .returning();
+    } else {
+      [row] = await db
+        .insert(userSmtpSettings)
+        .values({
+          userId: principal.userId,
+          authMethod: "oauth2_google",
+          smtpHost: "smtp.gmail.com",
+          smtpPort: 465,
+          smtpSecure: true,
+          smtpUsername: email,
+          smtpPassword: null,
+          oauthRefreshToken: encryptedToken,
+          fromName: principal.name || email,
+          fromEmail: email,
+          isActive: true,
+        })
+        .returning();
+    }
+
+    await writeAudit(principal, "smtp_settings_updated", "SMTPSettings", row.id, {
+      authMethod: "oauth2_google",
+      email,
+    });
+
+    return toDTO(row);
+  },
+
+  /**
+   * Disconnect a user's SMTP config entirely (password or OAuth).
+   */
+  async disconnect(principal: Principal): Promise<void> {
+    if (principal.kind !== "INTERNAL") throw new Error("FORBIDDEN");
+    await db.delete(userSmtpSettings).where(eq(userSmtpSettings.userId, principal.userId));
+    await writeAudit(principal, "smtp_settings_disconnected", "SMTPSettings", principal.userId, {});
   },
 
   /**
@@ -164,21 +253,79 @@ export const smtpSettingsService = {
   },
 
   /**
+   * Verify the user's *saved* SMTP config (password or OAuth). Use this to test
+   * a connection that's already stored — e.g. an OAuth connection that has no
+   * password to re-enter. Throws on failure.
+   */
+  async verifySaved(userId: string): Promise<{ success: boolean }> {
+    const transporter = await smtpSettingsService.createTransporter(userId);
+    if (!transporter) throw new Error("SMTP_NOT_CONFIGURED");
+    try {
+      await transporter.verify();
+      return { success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      throw new Error(`SMTP_TEST_FAILED: ${msg}`);
+    }
+  },
+
+  /**
    * Create a transporter for a user's SMTP settings. Returns null if user
-   * has not configured SMTP or it's disabled.
+   * has not configured SMTP or it's disabled. Handles both password and
+   * Google OAuth2 (XOAUTH2) auth methods.
    */
   async createTransporter(userId: string): Promise<Transporter | null> {
-    const settings = await smtpSettingsService.getSettingsWithPassword(userId);
-    if (!settings || !settings.isActive) return null;
+    const [row] = await db
+      .select()
+      .from(userSmtpSettings)
+      .where(eq(userSmtpSettings.userId, userId))
+      .limit(1);
 
+    if (!row || !row.isActive) return null;
+
+    // Google OAuth2: nodemailer mints a short-lived access token from the
+    // refresh token + client credentials on each send.
+    if (row.authMethod === "oauth2_google") {
+      if (!row.oauthRefreshToken) return null;
+      if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+        console.error("[smtp] Google OAuth not configured but user has oauth2_google settings");
+        return null;
+      }
+      let refreshToken: string;
+      try {
+        refreshToken = decrypt(row.oauthRefreshToken);
+      } catch {
+        console.error("[smtp] failed to decrypt OAuth refresh token for user", userId);
+        return null;
+      }
+      return nodemailer.createTransport({
+        host: "smtp.gmail.com",
+        port: 465,
+        secure: true,
+        auth: {
+          type: "OAuth2",
+          user: row.smtpUsername,
+          clientId: process.env.GOOGLE_CLIENT_ID,
+          clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+          refreshToken,
+        },
+      });
+    }
+
+    // Classic password auth.
+    if (!row.smtpPassword) return null;
+    let pass: string;
+    try {
+      pass = decrypt(row.smtpPassword);
+    } catch {
+      console.error("[smtp] failed to decrypt password for user", userId);
+      return null;
+    }
     return nodemailer.createTransport({
-      host: settings.smtpHost,
-      port: settings.smtpPort,
-      secure: settings.smtpSecure,
-      auth: {
-        user: settings.smtpUsername,
-        pass: settings.smtpPassword,
-      },
+      host: row.smtpHost,
+      port: row.smtpPort,
+      secure: row.smtpSecure,
+      auth: { user: row.smtpUsername, pass },
     });
   },
 };

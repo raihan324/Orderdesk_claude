@@ -1,11 +1,24 @@
 import { NextResponse } from "next/server";
-import { clerkMiddleware } from "@clerk/nextjs/server";
+import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
-// Clerk middleware only runs in clerk mode; dev mode passes through untouched.
-const handler =
-  process.env.AUTH_MODE === "clerk" ? clerkMiddleware() : () => NextResponse.next();
+// Routes that are always accessible without a Clerk session.
+const isPublic = createRouteMatcher([
+  "/sign-in(.*)",
+  "/api/dev-auth(.*)",
+  "/api/webhooks(.*)",
+]);
 
-export default handler;
+// Protect all non-public routes when running in Clerk mode.
+// In dev mode, every route passes through so the local cookie auth works.
+const clerkHandler = clerkMiddleware(async (auth, request) => {
+  if (!isPublic(request)) {
+    await auth.protect();
+  }
+});
+
+const devHandler = () => NextResponse.next();
+
+export default process.env.AUTH_MODE === "clerk" ? clerkHandler : devHandler;
 
 export const config = {
   matcher: [

@@ -1,12 +1,13 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { eq } from "drizzle-orm";
-import { Building2, User2, Lock, LogOut, ShoppingCart, Settings } from "lucide-react";
+import { Building2, User2, Lock, LogOut, ShoppingCart, Settings, UserCog } from "lucide-react";
 import { getPrincipal } from "@/lib/auth/session";
 import { db } from "@/db";
-import { clients } from "@/db/schema";
+import { clients, contacts } from "@/db/schema";
 import { Card, Table, THead, TBody, Th, Td, Badge, STATUS_STYLE } from "@/components/ui";
 import { orderService } from "@/server/services/order.service";
+import { PortalProfileForm } from "@/components/portal-profile-form";
 import { formatCents } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -17,6 +18,7 @@ export default async function Portal() {
   if (p.kind === "INTERNAL") redirect("/dashboard");
 
   const [client] = await db.select().from(clients).where(eq(clients.id, p.clientId)).limit(1);
+  const [contact] = await db.select().from(contacts).where(eq(contacts.id, p.contactId)).limit(1);
   const orders = await orderService.list(p); // scoped to this client by the service
   const isB2B = client.type === "B2B";
 
@@ -63,6 +65,18 @@ export default async function Portal() {
             </TBody>
           </Table>
           {orders.length === 0 && <p className="py-10 text-center text-sm text-slate-400">No orders yet.</p>}
+        </Card>
+
+        <Card className="mt-4 overflow-hidden">
+          <div className="flex items-center gap-1.5 border-b border-slate-100 px-5 py-3 text-sm font-semibold text-slate-700">
+            <UserCog size={15} /> My details
+          </div>
+          <div className="p-5">
+            <PortalProfileForm
+              contact={contact}
+              clientDefaults={{ timezone: client.timezone, currency: client.currency, language: client.language }}
+            />
+          </div>
         </Card>
 
         <div className="mt-4 rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-500">

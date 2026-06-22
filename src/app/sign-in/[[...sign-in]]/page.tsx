@@ -14,7 +14,7 @@ export default async function SignIn() {
     const { SignIn } = await import("@clerk/nextjs");
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50 p-4">
-        <SignIn />
+        <SignIn forceRedirectUrl="/dashboard" />
       </div>
     );
   }

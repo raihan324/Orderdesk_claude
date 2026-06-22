@@ -3,7 +3,6 @@ import postgres from "postgres";
 import * as schema from "./schema";
 
 const url = process.env.DATABASE_URL;
-console.log("DATABASE_URL:", url);
 if (!url) throw new Error("DATABASE_URL is not set");
 
 // Reuse a single connection in dev to avoid exhausting the pool on hot reload.

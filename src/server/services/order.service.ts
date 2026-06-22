@@ -30,7 +30,15 @@ async function ownershipForClient(clientId: string) {
 
 export const orderService = {
   async list(p: Principal) {
-    authorize(p, "order.read");
+    // A listing is allowed when the principal can read orders in *some* scope;
+    // the query below restricts rows to that scope. Pass self-ownership so
+    // own-scoped roles (Sales Rep) and portal contacts clear the capability
+    // check instead of being treated as accessing an unowned resource.
+    authorize(
+      p,
+      "order.read",
+      p.kind === "PORTAL" ? { ownerClientId: p.clientId } : { ownerSalesRepId: p.userId },
+    );
     const repId = repScopeUserId(p, "order.read");
     let scopedClientIds: string[] | null = null;
     if (repId) {

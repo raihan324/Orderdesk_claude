@@ -193,7 +193,10 @@ export const userSmtpSettings = pgTable(
     smtpPort: integer("smtp_port").notNull(),
     smtpSecure: boolean("smtp_secure").notNull().default(true),
     smtpUsername: text("smtp_username").notNull(),
-    smtpPassword: text("smtp_password").notNull(), // encrypted
+    // "password" = classic user/pass SMTP; "oauth2_google" = Google OAuth2 (XOAUTH2)
+    authMethod: text("auth_method").notNull().default("password"),
+    smtpPassword: text("smtp_password"), // encrypted; null for OAuth2
+    oauthRefreshToken: text("oauth_refresh_token"), // encrypted; null for password auth
     fromName: text("from_name").notNull(),
     fromEmail: text("from_email").notNull(),
     isActive: boolean("is_active").notNull().default(true),
