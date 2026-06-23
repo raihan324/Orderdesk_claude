@@ -5,9 +5,11 @@ import { orders, orderItems, products, clients } from "@/db/schema";
 import { authorize, can, repScopeUserId, type Principal } from "@/lib/auth/rbac";
 import { writeAudit } from "@/server/audit";
 import { createId } from "@/lib/id";
+import { affiliateService } from "@/server/services/affiliate.service";
 
 export const createOrderInput = z.object({
   clientId: z.string().min(1),
+  affiliateCode: z.string().max(40).optional(), // optional referral attribution
   items: z
     .array(
       z.object({
@@ -137,6 +139,21 @@ export const orderService = {
         })
         .returning();
       await tx.insert(orderItems).values(lines.map((l) => ({ ...l, orderId: order.id })));
+
+      // Optional affiliate attribution — records a PENDING commission and stamps
+      // the order. No-op for an unknown/suspended code; never blocks the order.
+      if (input.affiliateCode) {
+        const affiliateId = await affiliateService.attributeOrder(
+          tx,
+          order.id,
+          input.affiliateCode,
+          totalCents,
+          owner.currency,
+        );
+        if (affiliateId) {
+          await tx.update(orders).set({ affiliateId }).where(eq(orders.id, order.id));
+        }
+      }
       return order;
     });
 

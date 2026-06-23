@@ -47,6 +47,7 @@ export default async function OrdersPage() {
                 <input name="quantity" type="number" min={0} defaultValue={0} className="w-24 rounded-md border border-slate-200 px-3 py-2 text-sm" />
               </div>
             ))}
+            <input name="affiliateCode" placeholder="Referral code (optional, e.g. REF-7F3K9Q)" className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm sm:w-72" />
             <Button type="submit">Submit order</Button>
           </form>
         </Card>

@@ -43,6 +43,21 @@ export const orderStatus = pgEnum("order_status", [
   "FULFILLED",
   "CANCELLED",
 ]);
+export const loanStatus = pgEnum("loan_status", [
+  "APPLIED",
+  "UNDER_REVIEW",
+  "SANCTIONED",
+  "REJECTED",
+  "DISBURSED",
+  "CLOSED",
+]);
+export const affiliateStatus = pgEnum("affiliate_status", ["ACTIVE", "SUSPENDED"]);
+export const commissionStatus = pgEnum("commission_status", [
+  "PENDING",
+  "APPROVED",
+  "PAID",
+  "REVERSED",
+]);
 
 /* ------------------------------------------------------------ internal users */
 export const users = pgTable("users", {
@@ -146,6 +161,8 @@ export const orders = pgTable("orders", {
     .references(() => clients.id),
   createdByUserId: text("created_by_user_id").references(() => users.id),
   createdByContactId: text("created_by_contact_id").references(() => contacts.id),
+  // affiliate attribution (referral); forward ref resolved lazily by drizzle
+  affiliateId: text("affiliate_id").references(() => affiliates.id),
   status: orderStatus("status").notNull().default("DRAFT"),
   currency: text("currency").notNull().default("USD"),
   totalCents: integer("total_cents").notNull().default(0),
@@ -177,6 +194,71 @@ export const auditLogs = pgTable("audit_logs", {
   entityId: text("entity_id"),
   metadata: jsonb("metadata"),
   ipAddress: text("ip_address"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+/* ------------------------------------------------------ lending / loan module */
+export const lenders = pgTable("lenders", {
+  id: text("id").primaryKey().$defaultFn(createId),
+  name: text("name").notNull(),
+  contactEmail: text("contact_email"),
+  contactPhone: text("contact_phone"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const loans = pgTable("loans", {
+  id: text("id").primaryKey().$defaultFn(createId),
+  lenderId: text("lender_id").references(() => lenders.id),
+  // borrower reuses an existing client record
+  borrowerClientId: text("borrower_client_id")
+    .notNull()
+    .references(() => clients.id),
+  principalCents: integer("principal_cents").notNull(), // requested amount
+  currency: text("currency").notNull().default("USD"),
+  purpose: text("purpose"),
+  tenureMonths: integer("tenure_months").notNull(),
+  interestRateBps: integer("interest_rate_bps").notNull(), // annual rate, basis points
+  status: loanStatus("status").notNull().default("APPLIED"),
+
+  // populated on sanction
+  sanctionedAmountCents: integer("sanctioned_amount_cents"),
+  sanctionedAt: timestamp("sanctioned_at"),
+  sanctionedByUserId: text("sanctioned_by_user_id").references(() => users.id),
+
+  disbursedAt: timestamp("disbursed_at"),
+  rejectionReason: text("rejection_reason"),
+
+  createdByUserId: text("created_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+/* --------------------------------------------- affiliate referral / commission */
+export const affiliates = pgTable("affiliates", {
+  id: text("id").primaryKey().$defaultFn(createId),
+  name: text("name").notNull(),
+  email: text("email").notNull(),
+  referralCode: text("referral_code").notNull().unique(),
+  commissionRateBps: integer("commission_rate_bps").notNull().default(500), // 5%
+  status: affiliateStatus("status").notNull().default("ACTIVE"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const affiliateCommissions = pgTable("affiliate_commissions", {
+  id: text("id").primaryKey().$defaultFn(createId),
+  affiliateId: text("affiliate_id")
+    .notNull()
+    .references(() => affiliates.id, { onDelete: "cascade" }),
+  orderId: text("order_id")
+    .notNull()
+    .references(() => orders.id, { onDelete: "cascade" }),
+  // snapshots taken at attribution time
+  orderTotalCents: integer("order_total_cents").notNull(),
+  commissionRateBps: integer("commission_rate_bps").notNull(),
+  commissionCents: integer("commission_cents").notNull(),
+  currency: text("currency").notNull().default("USD"),
+  status: commissionStatus("status").notNull().default("PENDING"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

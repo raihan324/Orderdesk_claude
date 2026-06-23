@@ -43,6 +43,12 @@ export type Action =
   | "product.manage"
   | "order.read"
   | "order.manage"
+  | "loan.read"
+  | "loan.manage"
+  | "loan.sanction"
+  | "affiliate.read"
+  | "affiliate.manage"
+  | "commission.manage"
   | "audit.read";
 
 const ALL = new Set<InternalRole>(["SUPER_ADMIN", "ADMIN", "MANAGER"]);
@@ -77,6 +83,23 @@ function internalScope(role: InternalRole, action: Action): "all" | "own" | fals
           : false;
     case "order.manage":
       return ALL.has(role) ? "all" : role === "SALES_REP" ? "own" : false;
+    case "loan.read":
+      // Sales reps see loans they originated; finance + management see all.
+      return ALL.has(role) || role === "FINANCE_USER" ? "all" : role === "SALES_REP" ? "own" : false;
+    case "loan.manage":
+      // Create / edit loan applications.
+      return ALL.has(role) ? "all" : role === "SALES_REP" ? "own" : false;
+    case "loan.sanction":
+      // Sanction / reject / disburse — the lender authority.
+      return role === "SUPER_ADMIN" || role === "ADMIN" || role === "FINANCE_USER" ? "all" : false;
+    case "affiliate.read":
+      return ALL.has(role) || role === "FINANCE_USER" ? "all" : false;
+    case "affiliate.manage":
+      // Create / edit affiliates and their referral codes.
+      return ALL.has(role) ? "all" : false;
+    case "commission.manage":
+      // Approve / pay / reverse commission payouts — finance authority.
+      return role === "SUPER_ADMIN" || role === "ADMIN" || role === "FINANCE_USER" ? "all" : false;
     case "audit.read":
       return ["SUPER_ADMIN", "ADMIN", "MANAGER"].includes(role) ? "all" : false;
     default:

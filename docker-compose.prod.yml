@@ -1,0 +1,85 @@
+# Production stack for a VPS running Traefik in HOST network mode.
+#
+# Because Traefik uses network_mode: host, it is NOT on any Docker network — it
+# discovers this container through the Docker socket (labels) and routes to its
+# IP on the bridge network below. So there is no external "traefik" network to
+# join; we just give our network a stable name and point the label at it.
+# We publish NO host ports — Traefik reaches the app container directly on :3000.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: orderdesk-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: orderdesk
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: orderdesk
+    volumes:
+      - orderdesk_pgdata:/var/lib/postgresql/data
+    networks:
+      - orderdesk_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orderdesk"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    # No labels, no published ports -> never reachable from Traefik or the internet.
+
+  app:
+    build:
+      context: .
+      args:
+        AUTH_MODE: ${AUTH_MODE}
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL}
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+        NEXT_PUBLIC_CLERK_SIGN_IN_URL: ${NEXT_PUBLIC_CLERK_SIGN_IN_URL}
+        NEXT_PUBLIC_CLERK_SIGN_IN_FORCE_REDIRECT_URL: ${NEXT_PUBLIC_CLERK_SIGN_IN_FORCE_REDIRECT_URL}
+    container_name: orderdesk-app
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - orderdesk_net
+    labels:
+      - "traefik.enable=true"
+      # Tell host-mode Traefik which network's IP to dial for this container.
+      - "traefik.docker.network=orderdesk_net"
+      - "traefik.http.routers.orderdesk.rule=Host(`${APP_DOMAIN}`)"
+      - "traefik.http.routers.orderdesk.entrypoints=websecure"
+      - "traefik.http.routers.orderdesk.tls=true"
+      - "traefik.http.routers.orderdesk.tls.certresolver=letsencrypt"
+      - "traefik.http.services.orderdesk.loadbalancer.server.port=3000"
+
+  # One-off schema sync: builds the full app (with drizzle-kit) and runs db:push.
+  #   docker compose -f docker-compose.prod.yml --profile migrate run --rm migrate
+  migrate:
+    build:
+      context: .
+      target: builder
+      args:
+        AUTH_MODE: ${AUTH_MODE}
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL}
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - orderdesk_net
+    command: ["npm", "run", "db:push"]
+    profiles: ["migrate"]
+
+networks:
+  # Explicit name so the traefik.docker.network label is deterministic
+  # (not prefixed with the compose project name).
+  orderdesk_net:
+    name: orderdesk_net
+    driver: bridge
+
+volumes:
+  orderdesk_pgdata:

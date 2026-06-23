@@ -17,6 +17,17 @@ import {
 import { userService } from "@/server/services/user.service";
 import { smtpSettingsService } from "@/server/services/smtp-settings.service";
 import { profileService } from "@/server/services/profile.service";
+import {
+  loanService,
+  createLoanInput,
+  sanctionLoanInput,
+  createLenderInput,
+} from "@/server/services/loan.service";
+import {
+  affiliateService,
+  createAffiliateInput,
+  updateAffiliateInput,
+} from "@/server/services/affiliate.service";
 
 export async function createProductAction(formData: FormData) {
   const p = await requirePrincipal();
@@ -118,7 +129,8 @@ export async function createOrderAction(formData: FormData) {
   const items = productIds
     .map((productId, i) => ({ productId, quantity: Number(quantities[i] || 0) }))
     .filter((it) => it.productId && it.quantity > 0);
-  const input = createOrderInput.parse({ clientId, items });
+  const affiliateCode = formData.get("affiliateCode") ? String(formData.get("affiliateCode")) : undefined;
+  const input = createOrderInput.parse({ clientId, affiliateCode, items });
   await orderService.create(p, input);
   revalidatePath("/orders");
 }
@@ -168,6 +180,96 @@ export async function updateProfileAction(formData: FormData) {
     avatarUrl: formData.get("avatarUrl") || undefined,
   });
   revalidatePath("/settings");
+}
+
+/* ------------------------------------------------------------- loan module */
+export async function createLoanAction(formData: FormData) {
+  const p = await requirePrincipal();
+  const input = createLoanInput.parse({
+    borrowerClientId: formData.get("borrowerClientId"),
+    lenderId: formData.get("lenderId") || undefined,
+    principal: formData.get("principal"),
+    currency: formData.get("currency") || "USD",
+    purpose: formData.get("purpose") || undefined,
+    tenureMonths: formData.get("tenureMonths"),
+    interestRatePct: formData.get("interestRatePct"),
+  });
+  const loan = await loanService.createApplication(p, input);
+  revalidatePath("/loans");
+  redirect(`/loans/${loan.id}`);
+}
+
+export async function sanctionLoanAction(formData: FormData) {
+  const p = await requirePrincipal();
+  const input = sanctionLoanInput.parse({
+    loanId: formData.get("loanId"),
+    lenderId: formData.get("lenderId") || undefined,
+    sanctionedAmount: formData.get("sanctionedAmount"),
+    interestRatePct: formData.get("interestRatePct"),
+    tenureMonths: formData.get("tenureMonths"),
+  });
+  await loanService.sanction(p, input);
+  revalidatePath(`/loans/${input.loanId}`);
+}
+
+export async function rejectLoanAction(formData: FormData) {
+  const p = await requirePrincipal();
+  const loanId = String(formData.get("loanId"));
+  await loanService.reject(p, loanId, String(formData.get("reason") || ""));
+  revalidatePath(`/loans/${loanId}`);
+}
+
+export async function disburseLoanAction(formData: FormData) {
+  const p = await requirePrincipal();
+  const loanId = String(formData.get("loanId"));
+  await loanService.disburse(p, loanId);
+  revalidatePath(`/loans/${loanId}`);
+}
+
+export async function createLenderAction(formData: FormData) {
+  const p = await requirePrincipal();
+  const input = createLenderInput.parse({
+    name: formData.get("name"),
+    contactEmail: formData.get("contactEmail") || "",
+    contactPhone: formData.get("contactPhone") || undefined,
+  });
+  await loanService.createLender(p, input);
+  revalidatePath("/lenders");
+}
+
+/* -------------------------------------------------------- affiliate module */
+export async function createAffiliateAction(formData: FormData) {
+  const p = await requirePrincipal();
+  const input = createAffiliateInput.parse({
+    name: formData.get("name"),
+    email: formData.get("email"),
+    commissionRatePct: formData.get("commissionRatePct") || 5,
+  });
+  const affiliate = await affiliateService.create(p, input);
+  revalidatePath("/affiliates");
+  redirect(`/affiliates/${affiliate.id}`);
+}
+
+export async function updateAffiliateAction(formData: FormData) {
+  const p = await requirePrincipal();
+  const input = updateAffiliateInput.parse({
+    affiliateId: formData.get("affiliateId"),
+    name: formData.get("name"),
+    email: formData.get("email"),
+    commissionRatePct: formData.get("commissionRatePct"),
+    status: formData.get("status"),
+  });
+  await affiliateService.update(p, input);
+  revalidatePath(`/affiliates/${input.affiliateId}`);
+}
+
+export async function setCommissionStatusAction(formData: FormData) {
+  const p = await requirePrincipal();
+  const commissionId = String(formData.get("commissionId"));
+  const status = String(formData.get("status")) as "APPROVED" | "PAID" | "REVERSED";
+  await affiliateService.setCommissionStatus(p, commissionId, status);
+  revalidatePath("/commissions");
+  revalidatePath("/affiliates");
 }
 
 export async function updateSmtpSettingsAction(formData: FormData) {
