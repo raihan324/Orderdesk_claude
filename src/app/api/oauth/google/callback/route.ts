@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 const STATE_COOKIE = "od_google_oauth_state";
 
 function settingsUrl(query: string): URL {
-  return new URL(`/settings?${query}`, process.env.NEXT_PUBLIC_APP_URL);
+  return new URL(`/settings/smtp?${query}`, process.env.NEXT_PUBLIC_APP_URL);
 }
 
 /**

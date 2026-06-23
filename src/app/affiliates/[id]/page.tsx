@@ -6,14 +6,28 @@ import { can } from "@/lib/auth/rbac";
 import { AppShell } from "@/components/app-shell";
 import { Card, Table, THead, TBody, Th, Td, Badge, Button } from "@/components/ui";
 import { affiliateService } from "@/server/services/affiliate.service";
-import { updateAffiliateAction } from "@/app/actions";
+import { updateAffiliateAction, inviteAffiliatePortalAction } from "@/app/actions";
 import { formatCents } from "@/lib/utils";
 import { AFFILIATE_STATUS_STYLE, COMMISSION_STATUS_STYLE } from "@/lib/status-badges";
+import { Mail } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
-export default async function AffiliateDetail({ params }: { params: Promise<{ id: string }> }) {
+const INVITE_MSG: Record<string, { type: "success" | "error"; text: string }> = {
+  sent: { type: "success", text: "Affiliate portal invite sent." },
+  off: { type: "error", text: "Affiliate marked invited, but the email could not be sent (check SMTP)." },
+  failed: { type: "error", text: "Could not invite the affiliate." },
+};
+
+export default async function AffiliateDetail({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ portal_invite?: string }>;
+}) {
   const { id } = await params;
+  const { portal_invite } = await searchParams;
   const p = await getPrincipal();
   if (!p) redirect("/sign-in");
   if (p.kind === "PORTAL") redirect("/portal");
@@ -23,6 +37,7 @@ export default async function AffiliateDetail({ params }: { params: Promise<{ id
   if (!data) notFound();
   const { affiliate, commissions } = data;
   const mayManage = can(p, "affiliate.manage");
+  const banner = portal_invite ? INVITE_MSG[portal_invite] : undefined;
 
   const earned = commissions
     .filter((c) => c.status !== "REVERSED")
@@ -40,10 +55,23 @@ export default async function AffiliateDetail({ params }: { params: Promise<{ id
       <div className="flex items-center gap-3">
         <h1 className="text-xl font-semibold tracking-tight">{affiliate.name}</h1>
         <Badge className={AFFILIATE_STATUS_STYLE[affiliate.status]}>{affiliate.status}</Badge>
+        {affiliate.hasPortalAccess && <Badge className="bg-indigo-100 text-indigo-700">Portal: {affiliate.portalStatus}</Badge>}
+        {mayManage && !affiliate.hasPortalAccess && (
+          <form action={inviteAffiliatePortalAction} className="ml-auto">
+            <input type="hidden" name="affiliateId" value={affiliate.id} />
+            <Button type="submit" variant="outline"><Mail size={14} /> Invite to portal</Button>
+          </form>
+        )}
       </div>
       <p className="mt-0.5 text-sm text-slate-500">
         {affiliate.email} · code <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-700">{affiliate.referralCode}</span>
       </p>
+
+      {banner && (
+        <div className={`mt-4 flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${banner.type === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700"}`}>
+          <Mail size={15} /> {banner.text}
+        </div>
+      )}
 
       <div className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="p-5">

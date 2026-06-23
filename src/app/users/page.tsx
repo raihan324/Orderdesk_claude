@@ -21,6 +21,9 @@ export default async function UsersPage({
   const p = await getPrincipal();
   if (!p) redirect("/sign-in");
   if (p.kind === "PORTAL") redirect("/portal");
+  if (p.kind === "LENDER") redirect("/portal/lender");
+  if (p.kind === "AFFILIATE") redirect("/portal/affiliate");
+  if (p.kind === "SERVICE") redirect("/sign-in");
   if (!can(p, "user.manage")) redirect("/dashboard");
 
   const users = await userService.list(p);

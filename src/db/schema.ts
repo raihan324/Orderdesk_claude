@@ -51,6 +51,13 @@ export const loanStatus = pgEnum("loan_status", [
   "DISBURSED",
   "CLOSED",
 ]);
+export const invoiceStatus = pgEnum("invoice_status", [
+  "DRAFT",
+  "ISSUED",
+  "PARTIALLY_PAID",
+  "PAID",
+  "VOID",
+]);
 export const affiliateStatus = pgEnum("affiliate_status", ["ACTIVE", "SUSPENDED"]);
 export const commissionStatus = pgEnum("commission_status", [
   "PENDING",
@@ -197,6 +204,60 @@ export const auditLogs = pgTable("audit_logs", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+/* ------------------------------------------------------------------ invoices */
+export const invoices = pgTable("invoices", {
+  id: text("id").primaryKey().$defaultFn(createId),
+  invoiceNumber: text("invoice_number").notNull().unique(),
+  // multiple invoices per order are allowed (no unique constraint on orderId)
+  orderId: text("order_id")
+    .notNull()
+    .references(() => orders.id),
+  clientId: text("client_id")
+    .notNull()
+    .references(() => clients.id),
+  currency: text("currency").notNull().default("USD"),
+  subtotalCents: integer("subtotal_cents").notNull(),
+  taxRateBps: integer("tax_rate_bps").notNull().default(0), // snapshot of client default
+  taxCents: integer("tax_cents").notNull().default(0),
+  totalCents: integer("total_cents").notNull(),
+  amountPaidCents: integer("amount_paid_cents").notNull().default(0), // sum of payments
+  status: invoiceStatus("status").notNull().default("DRAFT"),
+  notes: text("notes"),
+  issuedAt: timestamp("issued_at"),
+  dueAt: timestamp("due_at"),
+  paidAt: timestamp("paid_at"),
+  createdByUserId: text("created_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const invoiceItems = pgTable("invoice_items", {
+  id: text("id").primaryKey().$defaultFn(createId),
+  invoiceId: text("invoice_id")
+    .notNull()
+    .references(() => invoices.id, { onDelete: "cascade" }),
+  productId: text("product_id").references(() => products.id),
+  description: text("description").notNull(), // product name snapshot
+  quantity: integer("quantity").notNull(),
+  unitPriceCents: integer("unit_price_cents").notNull(),
+  lineTotalCents: integer("line_total_cents").notNull(),
+});
+
+// Payments recorded against an invoice (full or partial). Zoho "Payments Received".
+export const invoicePayments = pgTable("invoice_payments", {
+  id: text("id").primaryKey().$defaultFn(createId),
+  invoiceId: text("invoice_id")
+    .notNull()
+    .references(() => invoices.id, { onDelete: "cascade" }),
+  amountCents: integer("amount_cents").notNull(),
+  method: text("method").notNull().default("BANK_TRANSFER"), // CASH/BANK_TRANSFER/CARD/CHEQUE/...
+  reference: text("reference"), // txn id / cheque no
+  paidAt: timestamp("paid_at").notNull().defaultNow(),
+  note: text("note"),
+  recordedByUserId: text("recorded_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 /* ------------------------------------------------------ lending / loan module */
 export const lenders = pgTable("lenders", {
   id: text("id").primaryKey().$defaultFn(createId),
@@ -204,6 +265,10 @@ export const lenders = pgTable("lenders", {
   contactEmail: text("contact_email"),
   contactPhone: text("contact_phone"),
   isActive: boolean("is_active").notNull().default(true),
+  // portal access (lender self-service)
+  authProviderId: text("auth_provider_id").unique(),
+  hasPortalAccess: boolean("has_portal_access").notNull().default(false),
+  portalStatus: accountStatus("portal_status").notNull().default("PENDING"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -242,6 +307,10 @@ export const affiliates = pgTable("affiliates", {
   referralCode: text("referral_code").notNull().unique(),
   commissionRateBps: integer("commission_rate_bps").notNull().default(500), // 5%
   status: affiliateStatus("status").notNull().default("ACTIVE"),
+  // portal access (affiliate self-service)
+  authProviderId: text("auth_provider_id").unique(),
+  hasPortalAccess: boolean("has_portal_access").notNull().default(false),
+  portalStatus: accountStatus("portal_status").notNull().default("PENDING"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -259,6 +328,21 @@ export const affiliateCommissions = pgTable("affiliate_commissions", {
   commissionCents: integer("commission_cents").notNull(),
   currency: text("currency").notNull().default("USD"),
   status: commissionStatus("status").notNull().default("PENDING"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+/* ------------------------------------------ organization API keys (machine) */
+export const apiKeys = pgTable("api_keys", {
+  id: text("id").primaryKey().$defaultFn(createId),
+  name: text("name").notNull(),
+  // Role the key acts as (organization-level, "all" scope). Default ADMIN.
+  role: internalRole("role").notNull().default("ADMIN"),
+  keyPrefix: text("key_prefix").notNull().unique(), // clear, indexed: "odk_<env>_<id>"
+  secretHash: text("secret_hash").notNull(), // sha-256 of the secret half
+  createdByUserId: text("created_by_user_id").references(() => users.id), // the SUPER_ADMIN
+  lastUsedAt: timestamp("last_used_at"),
+  expiresAt: timestamp("expires_at"),
+  revokedAt: timestamp("revoked_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

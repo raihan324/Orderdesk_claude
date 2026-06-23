@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { LayoutDashboard, Building2, Package, ShoppingCart, UserCog, ScrollText, Boxes, ShieldCheck, LogOut, Settings, Landmark, Users2 } from "lucide-react";
+import { LayoutDashboard, Building2, Package, ShoppingCart, UserCog, ScrollText, Boxes, ShieldCheck, LogOut, Settings, Landmark, Users2, FileText } from "lucide-react";
 import type { Principal } from "@/lib/auth/rbac";
 import { can } from "@/lib/auth/rbac";
 import { ClerkSignOutButton } from "@/components/sign-out-button";
@@ -17,6 +17,7 @@ export function AppShell({ principal, children }: { principal: Principal; childr
     { href: "/clients", label: "Clients", icon: Building2, show: true },
     { href: "/products", label: "Products", icon: Package, show: true },
     { href: "/orders", label: "Orders", icon: ShoppingCart, show: true },
+    { href: "/invoices", label: "Invoices", icon: FileText, show: can(principal, "invoice.read") },
     { href: "/loans", label: "Loans", icon: Landmark, show: can(principal, "loan.read") },
     { href: "/affiliates", label: "Affiliates", icon: Users2, show: can(principal, "affiliate.read") },
     { href: "/users", label: "Users & Roles", icon: UserCog, show: can(principal, "user.manage") },

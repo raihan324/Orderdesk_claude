@@ -35,6 +35,14 @@ export const createLenderInput = z.object({
 });
 export type CreateLenderInput = z.infer<typeof createLenderInput>;
 
+// Lender portal self-service (excludes status / portal flags).
+export const updateOwnLenderInput = z.object({
+  name: z.string().min(1, "Name required").max(200),
+  contactEmail: z.string().email("Valid email required").optional().or(z.literal("")),
+  contactPhone: z.string().max(40).optional(),
+});
+export type UpdateOwnLenderInput = z.infer<typeof updateOwnLenderInput>;
+
 /* -------------------------------------------------------------- EMI helper */
 /** Amortized monthly payment in cents for a sanctioned loan. */
 export function emiCents(principalCents: number, annualRateBps: number, months: number): number {
@@ -183,9 +191,70 @@ export const loanService = {
     await writeAudit(p, "loan.closed", "Loan", loanId, {});
   },
 
+  /* ------------------------------------------------- lender portal (self) */
+  /** Loans assigned to the signed-in lender (read-only). */
+  async listForLender(p: Principal) {
+    if (p.kind !== "LENDER") throw new ForbiddenError("loan.read");
+    authorize(p, "loan.read", { ownerLenderId: p.lenderId });
+    return db
+      .select({
+        id: loans.id,
+        status: loans.status,
+        principalCents: loans.principalCents,
+        sanctionedAmountCents: loans.sanctionedAmountCents,
+        currency: loans.currency,
+        tenureMonths: loans.tenureMonths,
+        interestRateBps: loans.interestRateBps,
+        createdAt: loans.createdAt,
+        borrowerName: clients.name,
+      })
+      .from(loans)
+      .innerJoin(clients, eq(loans.borrowerClientId, clients.id))
+      .where(eq(loans.lenderId, p.lenderId))
+      .orderBy(desc(loans.createdAt));
+  },
+
+  async getOwnLender(p: Principal) {
+    if (p.kind !== "LENDER") throw new ForbiddenError("loan.read");
+    const [row] = await db.select().from(lenders).where(eq(lenders.id, p.lenderId)).limit(1);
+    return row ?? null;
+  },
+
+  async updateOwnLender(p: Principal, input: UpdateOwnLenderInput) {
+    if (p.kind !== "LENDER") throw new ForbiddenError("loan.read");
+    const [row] = await db
+      .update(lenders)
+      .set({
+        name: input.name,
+        contactEmail: input.contactEmail || null,
+        contactPhone: input.contactPhone || null,
+      })
+      .where(eq(lenders.id, p.lenderId))
+      .returning();
+    await writeAudit(p, "lender.self_updated", "Lender", row.id, {});
+    return row;
+  },
+
   /* ------------------------------------------------------------- lenders */
   async listLenders() {
     return db.select().from(lenders).orderBy(desc(lenders.createdAt));
+  },
+
+  /**
+   * Invite a lender to the lender portal: requires a contact email, flags
+   * portal access, and returns the lender so the caller can send the email.
+   */
+  async invitePortal(p: Principal, lenderId: string) {
+    authorize(p, "loan.sanction");
+    const [lender] = await db.select().from(lenders).where(eq(lenders.id, lenderId)).limit(1);
+    if (!lender) throw new Error("NOT_FOUND");
+    if (!lender.contactEmail) throw new Error("LENDER_EMAIL_REQUIRED");
+    await db
+      .update(lenders)
+      .set({ hasPortalAccess: true, portalStatus: "INVITED" })
+      .where(eq(lenders.id, lenderId));
+    await writeAudit(p, "lender.portal_invited", "Lender", lenderId, { email: lender.contactEmail });
+    return lender;
   },
 
   async createLender(p: Principal, input: CreateLenderInput) {

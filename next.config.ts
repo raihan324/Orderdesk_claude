@@ -43,7 +43,9 @@ const nextConfig: NextConfig = {
   output: "standalone",
   poweredByHeader: false,
   async headers() {
-    return [{ source: "/:path*", headers: securityHeaders }];
+    // Apply the strict CSP everywhere EXCEPT /api-docs, which serves Swagger UI
+    // from a CDN and sets its own (relaxed) CSP in the route handler.
+    return [{ source: "/((?!api-docs).*)", headers: securityHeaders }];
   },
 };
 

@@ -6,6 +6,9 @@ const isPublic = createRouteMatcher([
   "/sign-in(.*)",
   "/api/dev-auth(.*)",
   "/api/webhooks(.*)",
+  // REST API authenticates itself via X-API-Key (or its own Bearer check), so
+  // Clerk's session guard must not block it.
+  "/api/v1(.*)",
 ]);
 
 // Protect all non-public routes when running in Clerk mode.

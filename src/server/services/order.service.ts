@@ -39,7 +39,9 @@ export const orderService = {
     authorize(
       p,
       "order.read",
-      p.kind === "PORTAL" ? { ownerClientId: p.clientId } : { ownerSalesRepId: p.userId },
+      p.kind === "PORTAL"
+        ? { ownerClientId: p.clientId }
+        : { ownerSalesRepId: p.kind === "INTERNAL" ? p.userId : null },
     );
     const repId = repScopeUserId(p, "order.read");
     let scopedClientIds: string[] | null = null;

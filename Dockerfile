@@ -53,6 +53,8 @@ RUN addgroup -g 1001 -S nodejs && adduser -S nextjs -u 1001
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+# OpenAPI spec, served at /api-docs/openapi by the Swagger UI route.
+COPY --from=builder /app/docs/api/openapi.yaml ./docs/api/openapi.yaml
 
 USER nextjs
 EXPOSE 3000

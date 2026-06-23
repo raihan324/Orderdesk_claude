@@ -15,12 +15,12 @@ const STATE_COOKIE = "od_google_oauth_state";
 export async function GET() {
   const principal = await requirePrincipal();
   if (principal.kind !== "INTERNAL") {
-    return NextResponse.redirect(new URL("/settings", process.env.NEXT_PUBLIC_APP_URL));
+    return NextResponse.redirect(new URL("/settings/smtp", process.env.NEXT_PUBLIC_APP_URL));
   }
 
   if (!googleOAuthConfigured()) {
     return NextResponse.redirect(
-      new URL("/settings?oauth=google_not_configured", process.env.NEXT_PUBLIC_APP_URL),
+      new URL("/settings/smtp?oauth=google_not_configured", process.env.NEXT_PUBLIC_APP_URL),
     );
   }
 

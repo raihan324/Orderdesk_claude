@@ -14,6 +14,8 @@ export default async function ClientsPage() {
   const p = await getPrincipal();
   if (!p) redirect("/sign-in");
   if (p.kind === "PORTAL") redirect("/portal");
+  if (p.kind === "LENDER") redirect("/portal/lender");
+  if (p.kind === "AFFILIATE") redirect("/portal/affiliate");
 
   const clients = await clientService.list(p);
   const reps = await clientService.reps();

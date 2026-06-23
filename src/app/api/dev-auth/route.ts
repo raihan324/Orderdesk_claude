@@ -18,11 +18,17 @@ export async function GET(req: NextRequest) {
     return res;
   }
 
-  const as = url.searchParams.get("as"); // "INTERNAL:<id>" | "PORTAL:<id>"
-  if (!as || !/^(INTERNAL|PORTAL):/.test(as)) {
+  const as = url.searchParams.get("as"); // "INTERNAL:<id>" | "PORTAL:<id>" | "LENDER:<id>" | "AFFILIATE:<id>"
+  if (!as || !/^(INTERNAL|PORTAL|LENDER|AFFILIATE):/.test(as)) {
     return NextResponse.json({ error: "Missing or invalid 'as' param" }, { status: 400 });
   }
-  const dest = as.startsWith("INTERNAL") ? "/dashboard" : "/portal";
+  const dest = as.startsWith("INTERNAL")
+    ? "/dashboard"
+    : as.startsWith("LENDER")
+      ? "/portal/lender"
+      : as.startsWith("AFFILIATE")
+        ? "/portal/affiliate"
+        : "/portal";
   const res = NextResponse.redirect(new URL(dest, base));
   res.cookies.set(SESSION_COOKIE, as, {
     httpOnly: true,

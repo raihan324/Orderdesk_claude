@@ -133,6 +133,104 @@ export async function sendPortalInviteEmail(opts: {
   });
 }
 
+/**
+ * Generic portal invite (lenders, affiliates). Links to the sign-up page where
+ * the recipient creates an account with this email and reaches their portal.
+ */
+export async function sendRolePortalInvite(opts: {
+  to: string;
+  name: string;
+  portalLabel: string; // e.g. "lender" / "affiliate"
+  signUpUrl: string;
+  userId?: string;
+}): Promise<void> {
+  const ctx = await getTransportForUser(opts.userId || null);
+  if (!ctx) throw new Error("SMTP_NOT_CONFIGURED");
+  const { transport: t, from } = ctx;
+
+  await t.sendMail({
+    from,
+    to: opts.to,
+    subject: `You've been invited to the OrderDesk ${opts.portalLabel} portal`,
+    text:
+      `Hi ${opts.name},\n\n` +
+      `You've been invited to the OrderDesk ${opts.portalLabel} portal.\n\n` +
+      `Create your account using this email address (${opts.to}) to sign in:\n${opts.signUpUrl}\n\n` +
+      `— OrderDesk`,
+    html: `
+      <div style="font-family:system-ui,Segoe UI,Arial,sans-serif;max-width:480px;margin:0 auto;color:#0f172a">
+        <h2 style="margin:0 0 4px">You've been invited to the ${opts.portalLabel} portal</h2>
+        <p style="color:#475569;margin:0 0 16px">Hi ${opts.name}, create your account with <strong>${opts.to}</strong> to view your ${opts.portalLabel} dashboard.</p>
+        <a href="${opts.signUpUrl}"
+           style="display:inline-block;background:#4f46e5;color:#fff;text-decoration:none;padding:10px 18px;border-radius:8px;font-weight:600">
+          Sign up to the portal
+        </a>
+        <p style="color:#94a3b8;font-size:12px;margin:20px 0 0">If you weren't expecting this, you can ignore this email.</p>
+      </div>`,
+  });
+}
+
+function money(cents: number, currency: string): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(cents / 100);
+}
+
+/** Email an issued invoice (HTML) to the client's billing contact. */
+export async function sendInvoiceEmail(opts: {
+  to: string;
+  recipientName: string;
+  clientName: string;
+  invoiceNumber: string;
+  currency: string;
+  subtotalCents: number;
+  taxCents: number;
+  totalCents: number;
+  dueAt: Date | null;
+  items: { description: string; quantity: number; lineTotalCents: number }[];
+  userId?: string;
+}): Promise<void> {
+  const ctx = await getTransportForUser(opts.userId || null);
+  if (!ctx) throw new Error("SMTP_NOT_CONFIGURED");
+  const { transport: t, from } = ctx;
+
+  const rows = opts.items
+    .map(
+      (i) =>
+        `<tr><td style="padding:6px 0;color:#475569">${i.description} × ${i.quantity}</td>` +
+        `<td style="padding:6px 0;text-align:right;color:#0f172a">${money(i.lineTotalCents, opts.currency)}</td></tr>`,
+    )
+    .join("");
+  const due = opts.dueAt ? `<p style="color:#475569;margin:0 0 8px">Due by ${opts.dueAt.toLocaleDateString()}</p>` : "";
+
+  await t.sendMail({
+    from,
+    to: opts.to,
+    subject: `Invoice ${opts.invoiceNumber} from OrderDesk`,
+    text:
+      `Hi ${opts.recipientName},\n\n` +
+      `Please find invoice ${opts.invoiceNumber} for ${opts.clientName}.\n` +
+      `Subtotal: ${money(opts.subtotalCents, opts.currency)}\n` +
+      `Tax: ${money(opts.taxCents, opts.currency)}\n` +
+      `Total: ${money(opts.totalCents, opts.currency)}\n` +
+      (opts.dueAt ? `Due: ${opts.dueAt.toLocaleDateString()}\n` : "") +
+      `\n— OrderDesk`,
+    html: `
+      <div style="font-family:system-ui,Segoe UI,Arial,sans-serif;max-width:520px;margin:0 auto;color:#0f172a">
+        <h2 style="margin:0 0 2px">Invoice ${opts.invoiceNumber}</h2>
+        <p style="color:#64748b;margin:0 0 16px">For ${opts.clientName}</p>
+        ${due}
+        <table style="width:100%;border-collapse:collapse;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0">
+          ${rows}
+        </table>
+        <table style="width:100%;border-collapse:collapse;margin-top:8px">
+          <tr><td style="padding:4px 0;color:#64748b">Subtotal</td><td style="padding:4px 0;text-align:right">${money(opts.subtotalCents, opts.currency)}</td></tr>
+          <tr><td style="padding:4px 0;color:#64748b">Tax</td><td style="padding:4px 0;text-align:right">${money(opts.taxCents, opts.currency)}</td></tr>
+          <tr><td style="padding:8px 0;font-weight:700">Total</td><td style="padding:8px 0;text-align:right;font-weight:700">${money(opts.totalCents, opts.currency)}</td></tr>
+        </table>
+        <p style="color:#94a3b8;font-size:12px;margin:20px 0 0">Thank you for your business.</p>
+      </div>`,
+  });
+}
+
 function roleLabel(role: string): string {
   return role
     .toLowerCase()

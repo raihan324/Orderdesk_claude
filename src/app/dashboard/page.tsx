@@ -13,6 +13,8 @@ export default async function Dashboard() {
   const p = await getPrincipal();
   if (!p) redirect("/sign-in");
   if (p.kind === "PORTAL") redirect("/portal");
+  if (p.kind === "LENDER") redirect("/portal/lender");
+  if (p.kind === "AFFILIATE") redirect("/portal/affiliate");
 
   const [clients, orders, products] = await Promise.all([
     clientService.list(p),

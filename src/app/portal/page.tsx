@@ -16,6 +16,9 @@ export default async function Portal() {
   const p = await getPrincipal();
   if (!p) redirect("/sign-in");
   if (p.kind === "INTERNAL") redirect("/dashboard");
+  if (p.kind === "LENDER") redirect("/portal/lender");
+  if (p.kind === "AFFILIATE") redirect("/portal/affiliate");
+  if (p.kind === "SERVICE") redirect("/sign-in");
 
   const [client] = await db.select().from(clients).where(eq(clients.id, p.clientId)).limit(1);
   const [contact] = await db.select().from(contacts).where(eq(contacts.id, p.contactId)).limit(1);

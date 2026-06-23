@@ -1,0 +1,1830 @@
+openapi: 3.1.0
+info:
+  title: OrderDesk REST API
+  version: 1.0.0
+  description: >
+    REST API for OrderDesk, derived from the existing service layer and RBAC model.
+
+    Authentication: first-party clients send a Clerk-issued JWT as
+    `Authorization: Bearer <token>`; machine clients send `X-API-Key`. Both resolve
+    to the same Principal and are authorized by the existing `authorize()` rules.
+
+    Money is integer cents (`*Cents`); rates are basis points (`*Bps`). Request
+    bodies accept human amounts (decimal major units / percent) which the server
+    converts. Order pricing is server-authoritative.
+
+    Per-operation vendor extensions: `x-required-permission` (the RBAC Action),
+    `x-roles` (roles that satisfy it), `x-implementation-status`
+    (backed = service method exists, proposed = small new service method needed).
+  license:
+    name: Proprietary
+servers:
+  - url: /api/v1
+    description: Versioned API base path
+
+security:
+  - bearerAuth: []
+  - apiKeyAuth: []
+
+tags:
+  - name: Auth
+  - name: API Keys
+  - name: Clients
+  - name: Contacts
+  - name: Products
+  - name: Orders
+  - name: Users
+  - name: Roles & Permissions
+  - name: Loans
+  - name: Lenders
+  - name: Affiliates
+  - name: Commissions
+  - name: Profile & SMTP
+  - name: Activity Logs
+
+paths:
+  # ----------------------------------------------------------------- Auth
+  /me:
+    get:
+      tags: [Auth]
+      summary: Resolve the organization principal for an API key (IMPLEMENTED)
+      description: >
+        Built sample endpoint. Send `X-API-Key` and it returns the resolved
+        organization SERVICE principal. Returns 401 for a missing/invalid/revoked/expired key.
+      security:
+        - apiKeyAuth: []
+      x-required-permission: valid API key
+      x-implementation-status: built
+      responses:
+        "200":
+          description: The organization service principal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  principal: { $ref: "#/components/schemas/Principal" }
+              example:
+                principal: { kind: SERVICE, apiKeyId: "ak_123", role: ADMIN, name: "API: CI pipeline" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Current principal
+      description: Returns the resolved internal user or portal contact for the credentials.
+      x-required-permission: authenticated
+      x-implementation-status: proposed
+      responses:
+        "200":
+          description: The authenticated principal
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Principal" }
+              examples:
+                internal:
+                  value: { kind: INTERNAL, userId: "u_123", role: ADMIN, name: "Raihan" }
+                portal:
+                  value: { kind: PORTAL, contactId: "c_9", clientId: "cl_4", name: "Jane Doe", canManageOrgSettings: false, canManagePortalUsers: false }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token (JWT option)
+      security: []
+      x-required-permission: public
+      x-implementation-status: proposed
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { refreshToken: { type: string } }
+      responses:
+        "200":
+          description: New access token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken: { type: string }
+                  expiresIn: { type: integer, example: 900 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke current session / refresh token
+      x-required-permission: authenticated
+      x-implementation-status: proposed
+      responses:
+        "204": { description: Logged out }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ------------------------------------------------------------- API Keys
+  /api-keys:
+    get:
+      tags: [API Keys]
+      summary: List the organization's API keys
+      description: Organization-level keys. SUPER_ADMIN only. Returns metadata only — secrets are never returned after creation.
+      x-required-permission: apikey.manage
+      x-roles: [SUPER_ADMIN]
+      x-implementation-status: proposed
+      parameters:
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+      responses:
+        "200":
+          description: Page of API keys
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/ApiKey" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [API Keys]
+      summary: Create an organization API key
+      description: SUPER_ADMIN only. The key represents the organization and acts with the assigned role. The plaintext key is returned exactly once and cannot be retrieved again.
+      x-required-permission: apikey.manage
+      x-roles: [SUPER_ADMIN]
+      x-implementation-status: proposed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApiKeyCreateRequest" }
+            example: { name: "CI pipeline", role: ADMIN, expiresAt: "2027-01-01T00:00:00Z" }
+      responses:
+        "201":
+          description: Created — includes the one-time plaintext secret
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiKey"
+                  - type: object
+                    properties:
+                      plaintext:
+                        type: string
+                        example: "odk_live_a1b2c3.0f9e8d7c6b5a4938271605f4e3d2c1b0"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /api-keys/{id}:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    get:
+      tags: [API Keys]
+      summary: Get API key metadata
+      x-required-permission: apikey.manage
+      x-roles: [SUPER_ADMIN]
+      x-implementation-status: proposed
+      responses:
+        "200":
+          description: Key metadata
+          content: { application/json: { schema: { $ref: "#/components/schemas/ApiKey" } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [API Keys]
+      summary: Revoke an API key
+      x-required-permission: apikey.manage
+      x-roles: [SUPER_ADMIN]
+      x-implementation-status: proposed
+      responses:
+        "204": { description: Revoked }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api-keys/{id}/rotate:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    post:
+      tags: [API Keys]
+      summary: Rotate an API key
+      description: SUPER_ADMIN only. Issues a new secret for the same key id; the previous secret is invalidated immediately.
+      x-required-permission: apikey.manage
+      x-roles: [SUPER_ADMIN]
+      x-implementation-status: proposed
+      responses:
+        "200":
+          description: Rotated — new one-time plaintext secret
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiKey"
+                  - type: object
+                    properties: { plaintext: { type: string } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api-keys/{id}/usage:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    get:
+      tags: [API Keys]
+      summary: API key usage
+      x-required-permission: apikey.manage
+      x-roles: [SUPER_ADMIN]
+      x-implementation-status: proposed
+      responses:
+        "200":
+          description: Usage summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  totalRequests: { type: integer, example: 1820 }
+                  lastUsedAt: { type: [string, "null"], format: date-time }
+                  last30dByDay:
+                    type: array
+                    items:
+                      type: object
+                      properties: { date: { type: string, format: date }, count: { type: integer } }
+
+  # ------------------------------------------------------------- Clients
+  /clients:
+    get:
+      tags: [Clients]
+      summary: List clients
+      description: Sales reps see only their assigned clients (ownership-scoped after filters).
+      x-required-permission: client.read
+      x-roles: [SUPER_ADMIN, ADMIN, MANAGER, "SALES_REP (own)", SUPPORT_AGENT, FINANCE_USER, STAFF]
+      x-implementation-status: backed
+      parameters:
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+        - $ref: "#/components/parameters/sort"
+        - $ref: "#/components/parameters/q"
+        - $ref: "#/components/parameters/createdFrom"
+        - $ref: "#/components/parameters/createdTo"
+        - name: type
+          in: query
+          schema: { $ref: "#/components/schemas/ClientType" }
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/AccountStatus" }
+        - name: salesRepId
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Page of clients
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/Client" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Clients]
+      summary: Create a client
+      description: Managers+ may assign any rep; a Sales Rep may only create self-owned clients.
+      x-required-permission: client.manage
+      x-roles: [SUPER_ADMIN, ADMIN, MANAGER, "SALES_REP (self-owned)"]
+      x-implementation-status: backed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientCreateRequest" }
+            examples:
+              b2b: { value: { type: B2B, name: "Acme Inc.", industry: "Manufacturing", website: "https://acme.com", salesRepId: "u_55" } }
+              b2c: { value: { type: B2C, name: "Jane Doe" } }
+      responses:
+        "201":
+          description: Created
+          content: { application/json: { schema: { $ref: "#/components/schemas/Client" } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /clients/{id}:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    get:
+      tags: [Clients]
+      summary: Get client
+      x-required-permission: client.read
+      x-implementation-status: backed
+      responses:
+        "200":
+          description: Client with derived capability flags
+          content: { application/json: { schema: { $ref: "#/components/schemas/ClientDetail" } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Clients]
+      summary: Update client
+      x-required-permission: client.manage
+      x-implementation-status: proposed
+      requestBody:
+        content: { application/json: { schema: { $ref: "#/components/schemas/ClientUpdateRequest" } } }
+      responses:
+        "200":
+          description: Updated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Client" } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Clients]
+      summary: Delete (deactivate) client
+      description: Recommended soft-delete via status; cascades to contacts if hard-deleted.
+      x-required-permission: client.manage
+      x-implementation-status: proposed
+      responses:
+        "204": { description: Deleted }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /clients/{id}/contacts:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    get:
+      tags: [Contacts]
+      summary: List a client's contacts
+      x-required-permission: client.read
+      x-implementation-status: backed
+      responses:
+        "200":
+          description: Contacts for the client
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Contact" } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [Contacts]
+      summary: Add a contact to a client
+      x-required-permission: contact.manage
+      x-implementation-status: backed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContactCreateRequest" }
+            example: { name: "John Buyer", email: "john@acme.com", type: PROCUREMENT, jobTitle: "Buyer", phone: "+1 555 0100" }
+      responses:
+        "201":
+          description: Created
+          content: { application/json: { schema: { $ref: "#/components/schemas/Contact" } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /clients/{id}/orders:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    get:
+      tags: [Orders]
+      summary: List a client's orders
+      x-required-permission: order.read
+      x-implementation-status: backed
+      responses:
+        "200":
+          description: Orders for the client
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/OrderSummary" } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /clients/{id}/assign-rep:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    post:
+      tags: [Clients]
+      summary: Assign (or clear) the sales rep
+      x-required-permission: salesrep.assign
+      x-roles: [SUPER_ADMIN, ADMIN, MANAGER]
+      x-implementation-status: backed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { repId: { type: [string, "null"], description: "User id of a SALES_REP, or null to unassign" } }
+            example: { repId: "u_55" }
+      responses:
+        "204": { description: Assigned }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ------------------------------------------------------------ Contacts
+  /contacts/{id}:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    get:
+      tags: [Contacts]
+      summary: Get contact
+      x-required-permission: client.read
+      x-implementation-status: backed
+      responses:
+        "200":
+          description: Contact
+          content: { application/json: { schema: { $ref: "#/components/schemas/Contact" } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Contacts]
+      summary: Update contact
+      description: Portal permission flags only apply if the contact has portal access.
+      x-required-permission: contact.manage
+      x-implementation-status: backed
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/ContactUpdateRequest" } } }
+      responses:
+        "200":
+          description: Updated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Contact" } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Contacts]
+      summary: Delete contact
+      x-required-permission: contact.manage
+      x-implementation-status: proposed
+      responses:
+        "204": { description: Deleted }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /contacts/{id}/invite:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    post:
+      tags: [Contacts]
+      summary: Invite contact to the customer portal
+      description: Sets portal access INVITED and best-effort sends a sign-up email.
+      x-required-permission: portal.invite
+      x-implementation-status: backed
+      responses:
+        "200":
+          description: Invite processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { emailed: { type: boolean } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /portal/me:
+    patch:
+      tags: [Contacts]
+      summary: Portal self-service profile update
+      description: Portal contacts only. Cannot change email, type, or portal permissions.
+      x-required-permission: PORTAL self
+      x-implementation-status: backed
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/OwnContactUpdateRequest" } } }
+      responses:
+        "200":
+          description: Updated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Contact" } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ------------------------------------------------------------ Products
+  /products:
+    get:
+      tags: [Products]
+      summary: List products
+      description: Active catalog. Readable by all authenticated principals including portal contacts.
+      x-required-permission: product.read
+      x-implementation-status: backed
+      parameters:
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+        - $ref: "#/components/parameters/sort"
+        - $ref: "#/components/parameters/q"
+      responses:
+        "200":
+          description: Page of products
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/Product" } }
+    post:
+      tags: [Products]
+      summary: Create product
+      x-required-permission: product.manage
+      x-roles: [SUPER_ADMIN, ADMIN]
+      x-implementation-status: backed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProductCreateRequest" }
+            example: { sku: "WIDGET-1", name: "Blue Widget", description: "Standard widget", unitPrice: 9.99, stock: 100 }
+      responses:
+        "201":
+          description: Created
+          content: { application/json: { schema: { $ref: "#/components/schemas/Product" } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /products/{id}:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    get:
+      tags: [Products]
+      summary: Get product
+      x-required-permission: product.read
+      x-implementation-status: proposed
+      responses:
+        "200": { description: Product, content: { application/json: { schema: { $ref: "#/components/schemas/Product" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Products]
+      summary: Update product
+      x-required-permission: product.manage
+      x-implementation-status: proposed
+      requestBody:
+        content: { application/json: { schema: { $ref: "#/components/schemas/ProductUpdateRequest" } } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Product" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    delete:
+      tags: [Products]
+      summary: Deactivate product (soft delete)
+      x-required-permission: product.manage
+      x-implementation-status: proposed
+      responses:
+        "204": { description: Deactivated }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /products/bulk:
+    post:
+      tags: [Products]
+      summary: Bulk upsert products
+      x-required-permission: product.manage
+      x-implementation-status: proposed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                items: { type: array, items: { $ref: "#/components/schemas/ProductCreateRequest" } }
+      responses:
+        "200":
+          description: Bulk result
+          content: { application/json: { schema: { $ref: "#/components/schemas/BulkResult" } } }
+
+  # -------------------------------------------------------------- Orders
+  /orders:
+    get:
+      tags: [Orders]
+      summary: List orders
+      description: Reps see own clients' orders; portal contacts see only their client's orders.
+      x-required-permission: order.read
+      x-implementation-status: backed
+      parameters:
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+        - $ref: "#/components/parameters/sort"
+        - $ref: "#/components/parameters/createdFrom"
+        - $ref: "#/components/parameters/createdTo"
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/OrderStatus" }
+        - name: clientId
+          in: query
+          schema: { type: string }
+        - name: affiliateId
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Page of orders
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/OrderSummary" } }
+    post:
+      tags: [Orders]
+      summary: Create order
+      description: >
+        Send only productId + quantity; the server prices each line from the live catalog.
+        An optional affiliate referral code records a PENDING commission and stamps the order.
+      x-required-permission: order.manage
+      x-implementation-status: backed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OrderCreateRequest" }
+            example:
+              clientId: "cl_4"
+              affiliateCode: "REF-7F3K9Q"
+              items:
+                - { productId: "p_1", quantity: 3 }
+                - { productId: "p_2", quantity: 1 }
+      responses:
+        "201":
+          description: Created (status SUBMITTED)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Order" } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: Invalid product (inactive/unknown)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /orders/{id}:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    get:
+      tags: [Orders]
+      summary: Get order with items
+      x-required-permission: order.read
+      x-implementation-status: backed
+      responses:
+        "200":
+          description: Order detail
+          content: { application/json: { schema: { $ref: "#/components/schemas/OrderDetail" } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /orders/{id}/items:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    get:
+      tags: [Orders]
+      summary: List order line items
+      x-required-permission: order.read
+      x-implementation-status: backed
+      responses:
+        "200":
+          description: Line items
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/OrderItem" } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /orders/{id}/status:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    patch:
+      tags: [Orders]
+      summary: Transition order status
+      description: DRAFT → SUBMITTED → CONFIRMED → FULFILLED, or CANCELLED.
+      x-required-permission: order.manage
+      x-implementation-status: proposed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties: { status: { $ref: "#/components/schemas/OrderStatus" } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Order" } } } }
+        "409": { description: Invalid transition, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /orders/bulk-status:
+    post:
+      tags: [Orders]
+      summary: Bulk status transition
+      x-required-permission: order.manage
+      x-implementation-status: proposed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ids: { type: array, items: { type: string } }
+                status: { $ref: "#/components/schemas/OrderStatus" }
+      responses:
+        "200": { description: Bulk result, content: { application/json: { schema: { $ref: "#/components/schemas/BulkResult" } } } }
+
+  # --------------------------------------------------------------- Users
+  /users:
+    get:
+      tags: [Users]
+      summary: List internal users
+      x-required-permission: user.manage
+      x-roles: [SUPER_ADMIN]
+      x-implementation-status: backed
+      parameters:
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+        - $ref: "#/components/parameters/q"
+        - name: role
+          in: query
+          schema: { $ref: "#/components/schemas/InternalRole" }
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/AccountStatus" }
+      responses:
+        "200":
+          description: Page of users
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/User" } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Users]
+      summary: Invite an internal user
+      x-required-permission: user.manage
+      x-implementation-status: backed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserInviteRequest" }
+            example: { email: "new.staff@company.com", name: "New Staff", role: SALES_REP }
+      responses:
+        "201":
+          description: Invited
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+                  emailed: { type: boolean }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: Email already exists, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /users/{id}:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    get:
+      tags: [Users]
+      summary: Get user
+      x-required-permission: user.manage
+      x-implementation-status: proposed
+      responses:
+        "200": { description: User, content: { application/json: { schema: { $ref: "#/components/schemas/User" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /users/{id}/role:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    patch:
+      tags: [Users]
+      summary: Change user role
+      description: Cannot demote the last SUPER_ADMIN or change your own role.
+      x-required-permission: user.manage
+      x-implementation-status: backed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties: { role: { $ref: "#/components/schemas/InternalRole" } }
+      responses:
+        "204": { description: Updated }
+        "409": { description: LAST_SUPER_ADMIN / CANNOT_CHANGE_OWN_ROLE, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /users/{id}/status:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    patch:
+      tags: [Users]
+      summary: Change user status
+      x-required-permission: user.manage
+      x-implementation-status: backed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties: { status: { $ref: "#/components/schemas/AccountStatus" } }
+      responses:
+        "204": { description: Updated }
+        "409": { description: LAST_SUPER_ADMIN / CANNOT_SUSPEND_SELF, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  # ------------------------------------------------- Roles & Permissions
+  /roles:
+    get:
+      tags: [Roles & Permissions]
+      summary: List roles (code-defined metadata)
+      x-required-permission: authenticated internal
+      x-implementation-status: proposed
+      responses:
+        "200":
+          description: Roles
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/InternalRole" } }
+  /roles/{role}/permissions:
+    parameters:
+      - name: role
+        in: path
+        required: true
+        schema: { $ref: "#/components/schemas/InternalRole" }
+    get:
+      tags: [Roles & Permissions]
+      summary: Effective permissions for a role
+      x-required-permission: authenticated internal
+      x-implementation-status: proposed
+      responses:
+        "200":
+          description: Action → scope map
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: { type: string, enum: [all, own, none] }
+              example: { "client.read": all, "product.manage": none, "order.read": own }
+  /permissions:
+    get:
+      tags: [Roles & Permissions]
+      summary: List all permission actions
+      x-required-permission: authenticated internal
+      x-implementation-status: proposed
+      responses:
+        "200":
+          description: Actions
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Action" } }
+
+  # --------------------------------------------------------------- Loans
+  /loans:
+    get:
+      tags: [Loans]
+      summary: List loans
+      x-required-permission: loan.read
+      x-implementation-status: backed
+      parameters:
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/LoanStatus" }
+        - name: borrowerClientId
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Page of loans
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/LoanSummary" } }
+    post:
+      tags: [Loans]
+      summary: Create a loan application
+      x-required-permission: loan.manage
+      x-implementation-status: backed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoanCreateRequest" }
+            example: { borrowerClientId: "cl_4", lenderId: "ld_1", principal: 50000, currency: USD, purpose: "Working capital", tenureMonths: 24, interestRatePct: 12.5 }
+      responses:
+        "201": { description: Created (APPLIED), content: { application/json: { schema: { $ref: "#/components/schemas/Loan" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /loans/{id}:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    get:
+      tags: [Loans]
+      summary: Get loan with borrower & lender
+      x-required-permission: loan.read
+      x-implementation-status: backed
+      responses:
+        "200": { description: Loan detail, content: { application/json: { schema: { $ref: "#/components/schemas/LoanDetail" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /loans/{id}/review:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    post:
+      tags: [Loans]
+      summary: Move APPLIED → UNDER_REVIEW
+      x-required-permission: loan.sanction
+      x-implementation-status: backed
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { lenderId: { type: string } } }
+      responses:
+        "204": { description: In review }
+        "409": { description: INVALID_TRANSITION, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /loans/{id}/sanction:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    post:
+      tags: [Loans]
+      summary: Sanction a loan
+      x-required-permission: loan.sanction
+      x-roles: [SUPER_ADMIN, ADMIN, FINANCE_USER]
+      x-implementation-status: backed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoanSanctionRequest" }
+            example: { sanctionedAmount: 45000, interestRatePct: 12.5, tenureMonths: 24, lenderId: "ld_1" }
+      responses:
+        "200": { description: Sanctioned, content: { application/json: { schema: { $ref: "#/components/schemas/Loan" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: INVALID_TRANSITION, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /loans/{id}/reject:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    post:
+      tags: [Loans]
+      summary: Reject a loan
+      x-required-permission: loan.sanction
+      x-implementation-status: backed
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { reason: { type: string } } }
+      responses:
+        "204": { description: Rejected }
+        "409": { description: INVALID_TRANSITION, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /loans/{id}/disburse:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    post:
+      tags: [Loans]
+      summary: Mark SANCTIONED → DISBURSED
+      x-required-permission: loan.sanction
+      x-implementation-status: backed
+      responses:
+        "204": { description: Disbursed }
+        "409": { description: INVALID_TRANSITION, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /loans/{id}/close:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    post:
+      tags: [Loans]
+      summary: Mark DISBURSED → CLOSED
+      x-required-permission: loan.sanction
+      x-implementation-status: backed
+      responses:
+        "204": { description: Closed }
+        "409": { description: INVALID_TRANSITION, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  # ------------------------------------------------------------- Lenders
+  /lenders:
+    get:
+      tags: [Lenders]
+      summary: List lenders
+      x-required-permission: loan.read
+      x-implementation-status: backed
+      responses:
+        "200":
+          description: Lenders
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Lender" } }
+    post:
+      tags: [Lenders]
+      summary: Create lender
+      x-required-permission: loan.sanction
+      x-implementation-status: backed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LenderCreateRequest" }
+            example: { name: "First Capital", contactEmail: "loans@firstcapital.com", contactPhone: "+1 555 0144" }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Lender" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /lenders/{id}:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    get:
+      tags: [Lenders]
+      summary: Get lender
+      x-required-permission: loan.read
+      x-implementation-status: proposed
+      responses:
+        "200": { description: Lender, content: { application/json: { schema: { $ref: "#/components/schemas/Lender" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Lenders]
+      summary: Update lender
+      x-required-permission: loan.sanction
+      x-implementation-status: proposed
+      requestBody:
+        content: { application/json: { schema: { $ref: "#/components/schemas/LenderCreateRequest" } } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Lender" } } } }
+
+  # ---------------------------------------------------------- Affiliates
+  /affiliates:
+    get:
+      tags: [Affiliates]
+      summary: List affiliates with earnings
+      x-required-permission: affiliate.read
+      x-implementation-status: backed
+      parameters:
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+        - $ref: "#/components/parameters/q"
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/AffiliateStatus" }
+      responses:
+        "200":
+          description: Page of affiliates
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/AffiliateWithEarnings" } }
+    post:
+      tags: [Affiliates]
+      summary: Create affiliate
+      description: A unique referral code is generated automatically.
+      x-required-permission: affiliate.manage
+      x-implementation-status: backed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AffiliateCreateRequest" }
+            example: { name: "Partner LLC", email: "partner@example.com", commissionRatePct: 5 }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Affiliate" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /affiliates/{id}:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    get:
+      tags: [Affiliates]
+      summary: Get affiliate with commissions
+      x-required-permission: affiliate.read
+      x-implementation-status: backed
+      responses:
+        "200": { description: Affiliate detail, content: { application/json: { schema: { $ref: "#/components/schemas/AffiliateDetail" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Affiliates]
+      summary: Update affiliate (incl. suspend)
+      x-required-permission: affiliate.manage
+      x-implementation-status: backed
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/AffiliateUpdateRequest" } } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Affiliate" } } } }
+  /affiliates/{id}/commissions:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    get:
+      tags: [Commissions]
+      summary: List an affiliate's commissions
+      x-required-permission: affiliate.read
+      x-implementation-status: backed
+      responses:
+        "200":
+          description: Commissions
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Commission" } }
+
+  # --------------------------------------------------------- Commissions
+  /commissions:
+    get:
+      tags: [Commissions]
+      summary: List commissions (payout queue)
+      x-required-permission: affiliate.read
+      x-implementation-status: backed
+      parameters:
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/CommissionStatus" }
+        - name: affiliateId
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Page of commissions
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/Commission" } }
+  /commissions/{id}:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    get:
+      tags: [Commissions]
+      summary: Get commission
+      x-required-permission: affiliate.read
+      x-implementation-status: proposed
+      responses:
+        "200": { description: Commission, content: { application/json: { schema: { $ref: "#/components/schemas/Commission" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /commissions/{id}/status:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    patch:
+      tags: [Commissions]
+      summary: Approve / pay / reverse a commission
+      x-required-permission: commission.manage
+      x-roles: [SUPER_ADMIN, ADMIN, FINANCE_USER]
+      x-implementation-status: backed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [APPROVED, PAID, REVERSED] }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Commission" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /commissions/bulk-status:
+    post:
+      tags: [Commissions]
+      summary: Bulk approve / pay / reverse
+      x-required-permission: commission.manage
+      x-implementation-status: proposed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ids: { type: array, items: { type: string } }
+                status: { type: string, enum: [APPROVED, PAID, REVERSED] }
+      responses:
+        "200": { description: Bulk result, content: { application/json: { schema: { $ref: "#/components/schemas/BulkResult" } } } }
+
+  # ------------------------------------------------------ Profile & SMTP
+  /profile:
+    get:
+      tags: [Profile & SMTP]
+      summary: Get my profile
+      x-required-permission: authenticated internal (self)
+      x-implementation-status: backed
+      responses:
+        "200": { description: Profile, content: { application/json: { schema: { $ref: "#/components/schemas/Profile" } } } }
+    patch:
+      tags: [Profile & SMTP]
+      summary: Update my profile
+      x-required-permission: authenticated internal (self)
+      x-implementation-status: backed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProfileUpdateRequest" }
+            example: { name: "Raihan U.", phone: "+880 1700 000000", jobTitle: "Owner", avatarUrl: "https://cdn.example.com/me.png" }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Profile" } } } }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /settings/smtp:
+    get:
+      tags: [Profile & SMTP]
+      summary: Get my SMTP settings (no secrets)
+      x-required-permission: authenticated internal (self)
+      x-implementation-status: backed
+      responses:
+        "200":
+          description: SMTP settings or null
+          content: { application/json: { schema: { oneOf: [ { $ref: "#/components/schemas/SmtpSettings" }, { type: "null" } ] } } }
+    put:
+      tags: [Profile & SMTP]
+      summary: Save password-based SMTP settings
+      x-required-permission: authenticated internal (self)
+      x-implementation-status: backed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SmtpUpdateRequest" }
+            example: { smtpHost: "smtp.gmail.com", smtpPort: 465, smtpSecure: true, smtpUsername: "me@gmail.com", smtpPassword: "app-password", fromName: "OrderDesk", fromEmail: "me@gmail.com" }
+      responses:
+        "200": { description: Saved, content: { application/json: { schema: { $ref: "#/components/schemas/SmtpSettings" } } } }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [Profile & SMTP]
+      summary: Disconnect SMTP
+      x-required-permission: authenticated internal (self)
+      x-implementation-status: backed
+      responses:
+        "204": { description: Disconnected }
+  /settings/smtp/test:
+    post:
+      tags: [Profile & SMTP]
+      summary: Test SMTP credentials (without saving)
+      x-required-permission: authenticated internal (self)
+      x-implementation-status: backed
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/SmtpUpdateRequest" } } }
+      responses:
+        "200": { description: Result, content: { application/json: { schema: { type: object, properties: { success: { type: boolean } } } } } }
+        "400": { description: Connection failed, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /settings/smtp/verify:
+    post:
+      tags: [Profile & SMTP]
+      summary: Verify the saved SMTP/OAuth config
+      x-required-permission: authenticated internal (self)
+      x-implementation-status: backed
+      responses:
+        "200": { description: Result, content: { application/json: { schema: { type: object, properties: { success: { type: boolean } } } } } }
+
+  # -------------------------------------------------------- Activity logs
+  /activity-logs:
+    get:
+      tags: [Activity Logs]
+      summary: List audit/activity entries
+      x-required-permission: audit.read
+      x-roles: [SUPER_ADMIN, ADMIN, MANAGER]
+      x-implementation-status: proposed
+      parameters:
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+        - $ref: "#/components/parameters/createdFrom"
+        - $ref: "#/components/parameters/createdTo"
+        - name: action
+          in: query
+          schema: { type: string, example: "order.created" }
+        - name: entityType
+          in: query
+          schema: { type: string, example: "Order" }
+        - name: entityId
+          in: query
+          schema: { type: string }
+        - name: actorId
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Page of activity logs
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/ActivityLog" } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /activity-logs/{id}:
+    parameters: [{ $ref: "#/components/parameters/idPath" }]
+    get:
+      tags: [Activity Logs]
+      summary: Get an activity log entry
+      x-required-permission: audit.read
+      x-implementation-status: proposed
+      responses:
+        "200": { description: Entry, content: { application/json: { schema: { $ref: "#/components/schemas/ActivityLog" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Clerk-issued session JWT for first-party clients.
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: >
+        Organization API key (`odk_<env>_<id>.<secret>`) for machine clients. Represents
+        the main organization (not a user) and acts with the role assigned at creation.
+        Keys can be created/rotated/revoked by a SUPER_ADMIN only.
+
+  parameters:
+    idPath:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    pageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+    sort:
+      name: sort
+      in: query
+      description: "Field name; prefix with '-' for descending. Default -createdAt."
+      schema: { type: string, example: "-createdAt" }
+    q:
+      name: q
+      in: query
+      description: Free-text search (entity-specific fields).
+      schema: { type: string }
+    createdFrom:
+      name: createdFrom
+      in: query
+      schema: { type: string, format: date-time }
+    createdTo:
+      name: createdTo
+      in: query
+      schema: { type: string, format: date-time }
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid credentials
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" }, example: { error: { code: UNAUTHENTICATED, message: "Authentication required" } } } }
+    Forbidden:
+      description: Authenticated but not permitted (capability or ownership)
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" }, example: { error: { code: FORBIDDEN, message: "Not allowed to perform \"product.manage\"" } } } }
+    NotFound:
+      description: Resource not found
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" }, example: { error: { code: NOT_FOUND, message: "Resource not found" } } } }
+    ValidationError:
+      description: Request failed validation
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: "Invalid request body"
+              details: [{ path: ["email"], message: "Valid email required" }]
+
+  schemas:
+    # --- enums ---
+    InternalRole: { type: string, enum: [SUPER_ADMIN, ADMIN, MANAGER, SALES_REP, SUPPORT_AGENT, FINANCE_USER, STAFF] }
+    ClientType: { type: string, enum: [B2B, B2C] }
+    ContactType: { type: string, enum: [OWNER, DIRECTOR, MANAGER, ACCOUNTS, TECHNICAL, PROCUREMENT, PRIMARY, OTHER] }
+    AccountStatus: { type: string, enum: [ACTIVE, INVITED, PENDING, SUSPENDED] }
+    OrderStatus: { type: string, enum: [DRAFT, SUBMITTED, CONFIRMED, FULFILLED, CANCELLED] }
+    LoanStatus: { type: string, enum: [APPLIED, UNDER_REVIEW, SANCTIONED, REJECTED, DISBURSED, CLOSED] }
+    AffiliateStatus: { type: string, enum: [ACTIVE, SUSPENDED] }
+    CommissionStatus: { type: string, enum: [PENDING, APPROVED, PAID, REVERSED] }
+    Action:
+      type: string
+      enum: [user.manage, apikey.manage, client.read, client.manage, salesrep.assign, contact.manage, portal.invite, product.read, product.manage, order.read, order.manage, loan.read, loan.manage, loan.sanction, affiliate.read, affiliate.manage, commission.manage, audit.read]
+
+    # --- envelopes ---
+    Paginated:
+      type: object
+      properties:
+        data: { type: array, items: {} }
+        pagination:
+          type: object
+          properties:
+            page: { type: integer }
+            pageSize: { type: integer }
+            total: { type: integer }
+            totalPages: { type: integer }
+    BulkResult:
+      type: object
+      properties:
+        succeeded: { type: integer }
+        failed: { type: integer }
+        errors:
+          type: array
+          items: { type: object, properties: { id: { type: string }, message: { type: string } } }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, enum: [BAD_REQUEST, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, CONFLICT, VALIDATION_ERROR, RATE_LIMITED, INTERNAL] }
+            message: { type: string }
+            details: { type: [array, "null"], items: { type: object } }
+
+    Principal:
+      oneOf:
+        - type: object
+          properties:
+            kind: { type: string, const: INTERNAL }
+            userId: { type: string }
+            role: { $ref: "#/components/schemas/InternalRole" }
+            name: { type: string }
+        - type: object
+          properties:
+            kind: { type: string, const: PORTAL }
+            contactId: { type: string }
+            clientId: { type: string }
+            name: { type: string }
+            canManageOrgSettings: { type: boolean }
+            canManagePortalUsers: { type: boolean }
+        - type: object
+          description: Organization service principal (resolved from an API key).
+          properties:
+            kind: { type: string, const: SERVICE }
+            apiKeyId: { type: string }
+            role: { $ref: "#/components/schemas/InternalRole" }
+            name: { type: string }
+
+    # --- API keys ---
+    ApiKey:
+      type: object
+      description: Organization-level API key (not tied to a user). Secret is never returned after creation.
+      properties:
+        id: { type: string }
+        name: { type: string }
+        role: { $ref: "#/components/schemas/InternalRole", description: "Role the key acts as (all-scope)" }
+        keyPrefix: { type: string, example: "odk_live_a1b2c3" }
+        createdByUserId: { type: string, description: "The SUPER_ADMIN who created the key" }
+        lastUsedAt: { type: [string, "null"], format: date-time }
+        expiresAt: { type: [string, "null"], format: date-time }
+        revokedAt: { type: [string, "null"], format: date-time }
+        createdAt: { type: string, format: date-time }
+    ApiKeyCreateRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        role: { $ref: "#/components/schemas/InternalRole", description: "Role the org key acts as. Default ADMIN. Avoid own-scoped roles like SALES_REP." }
+        scopes: { type: array, items: { $ref: "#/components/schemas/Action" }, description: "Optional narrowing; cannot widen the assigned role's permissions." }
+        expiresAt: { type: string, format: date-time }
+
+    # --- clients ---
+    Client:
+      type: object
+      properties:
+        id: { type: string }
+        type: { $ref: "#/components/schemas/ClientType" }
+        name: { type: string }
+        status: { $ref: "#/components/schemas/AccountStatus" }
+        industry: { type: [string, "null"] }
+        website: { type: [string, "null"] }
+        salesRepId: { type: [string, "null"] }
+        currency: { type: string, example: USD }
+        timezone: { type: string, example: UTC }
+        language: { type: string, example: en }
+        createdAt: { type: string, format: date-time }
+    ClientDetail:
+      allOf:
+        - $ref: "#/components/schemas/Client"
+        - type: object
+          properties:
+            contacts: { type: array, items: { $ref: "#/components/schemas/Contact" } }
+            orders: { type: array, items: { $ref: "#/components/schemas/OrderSummary" } }
+            canManage: { type: boolean }
+            canAssign: { type: boolean }
+    ClientCreateRequest:
+      type: object
+      required: [type, name]
+      properties:
+        type: { $ref: "#/components/schemas/ClientType" }
+        name: { type: string, minLength: 1, maxLength: 200 }
+        industry: { type: string, maxLength: 120, description: "B2B only; ignored for B2C" }
+        website: { type: string, maxLength: 200, description: "B2B only" }
+        salesRepId: { type: string, description: "Elevated roles only; reps are auto-assigned to self" }
+    ClientUpdateRequest:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        industry: { type: [string, "null"], maxLength: 120 }
+        website: { type: [string, "null"], maxLength: 200 }
+        status: { $ref: "#/components/schemas/AccountStatus" }
+
+    # --- contacts ---
+    Contact:
+      type: object
+      properties:
+        id: { type: string }
+        clientId: { type: string }
+        type: { $ref: "#/components/schemas/ContactType" }
+        name: { type: string }
+        email: { type: string, format: email }
+        phone: { type: [string, "null"] }
+        jobTitle: { type: [string, "null"] }
+        department: { type: [string, "null"] }
+        position: { type: [string, "null"] }
+        hasPortalAccess: { type: boolean }
+        portalStatus: { $ref: "#/components/schemas/AccountStatus" }
+        canManageOrgSettings: { type: boolean }
+        canManagePortalUsers: { type: boolean }
+        timezoneOverride: { type: [string, "null"] }
+        currencyOverride: { type: [string, "null"] }
+        languageOverride: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
+    ContactCreateRequest:
+      type: object
+      required: [name, email]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        email: { type: string, format: email }
+        type: { $ref: "#/components/schemas/ContactType", default: OTHER }
+        jobTitle: { type: string, maxLength: 120 }
+        phone: { type: string, maxLength: 40 }
+    ContactUpdateRequest:
+      type: object
+      required: [name, email, type]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        email: { type: string, format: email }
+        type: { $ref: "#/components/schemas/ContactType" }
+        jobTitle: { type: string, maxLength: 120 }
+        phone: { type: string, maxLength: 40 }
+        department: { type: string, maxLength: 120 }
+        position: { type: string, maxLength: 120 }
+        canManageOrgSettings: { type: boolean, default: false }
+        canManagePortalUsers: { type: boolean, default: false }
+    OwnContactUpdateRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        phone: { type: string, maxLength: 40 }
+        jobTitle: { type: string, maxLength: 120 }
+        department: { type: string, maxLength: 120 }
+        position: { type: string, maxLength: 120 }
+        timezone: { type: string, maxLength: 60 }
+        currency: { type: string, maxLength: 10 }
+        language: { type: string, maxLength: 20 }
+
+    # --- products ---
+    Product:
+      type: object
+      properties:
+        id: { type: string }
+        sku: { type: string }
+        name: { type: string }
+        unitPriceCents: { type: integer, description: "Integer cents" }
+        stock: { type: integer }
+        isActive: { type: boolean }
+    ProductCreateRequest:
+      type: object
+      required: [sku, name, unitPrice]
+      properties:
+        sku: { type: string, minLength: 1, maxLength: 64 }
+        name: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 2000 }
+        unitPrice: { type: number, minimum: 0, multipleOf: 0.01, description: "Decimal major units; stored as cents" }
+        stock: { type: integer, minimum: 0, default: 0 }
+    ProductUpdateRequest:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 2000 }
+        unitPrice: { type: number, minimum: 0, multipleOf: 0.01 }
+        stock: { type: integer, minimum: 0 }
+        isActive: { type: boolean }
+
+    # --- orders ---
+    OrderSummary:
+      type: object
+      properties:
+        id: { type: string }
+        orderNumber: { type: string }
+        clientId: { type: string }
+        clientName: { type: string }
+        status: { $ref: "#/components/schemas/OrderStatus" }
+        totalCents: { type: integer }
+        currency: { type: string }
+        createdAt: { type: string, format: date-time }
+    Order:
+      type: object
+      properties:
+        id: { type: string }
+        orderNumber: { type: string }
+        clientId: { type: string }
+        affiliateId: { type: [string, "null"] }
+        status: { $ref: "#/components/schemas/OrderStatus" }
+        totalCents: { type: integer }
+        currency: { type: string }
+        createdAt: { type: string, format: date-time }
+    OrderItem:
+      type: object
+      properties:
+        productId: { type: string }
+        productName: { type: string }
+        quantity: { type: integer }
+        unitPriceCents: { type: integer }
+        lineTotalCents: { type: integer }
+    OrderDetail:
+      type: object
+      properties:
+        order: { $ref: "#/components/schemas/Order" }
+        items: { type: array, items: { $ref: "#/components/schemas/OrderItem" } }
+    OrderCreateRequest:
+      type: object
+      required: [clientId, items]
+      properties:
+        clientId: { type: string, minLength: 1 }
+        affiliateCode: { type: string, maxLength: 40, description: "Optional referral code; records a PENDING commission" }
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [productId, quantity]
+            properties:
+              productId: { type: string, minLength: 1 }
+              quantity: { type: integer, minimum: 1, maximum: 10000 }
+
+    # --- users ---
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        name: { type: string }
+        role: { $ref: "#/components/schemas/InternalRole" }
+        status: { $ref: "#/components/schemas/AccountStatus" }
+        linked: { type: boolean, description: "True once the Clerk identity is linked" }
+        createdAt: { type: string, format: date-time }
+    UserInviteRequest:
+      type: object
+      required: [email, name, role]
+      properties:
+        email: { type: string, format: email, description: "Trimmed + lowercased" }
+        name: { type: string, minLength: 1, maxLength: 200 }
+        role: { $ref: "#/components/schemas/InternalRole" }
+
+    # --- loans / lenders ---
+    LoanSummary:
+      type: object
+      properties:
+        id: { type: string }
+        status: { $ref: "#/components/schemas/LoanStatus" }
+        principalCents: { type: integer }
+        sanctionedAmountCents: { type: [integer, "null"] }
+        currency: { type: string }
+        tenureMonths: { type: integer }
+        interestRateBps: { type: integer, description: "Basis points" }
+        borrowerName: { type: string }
+        borrowerClientId: { type: string }
+        lenderName: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
+    Loan:
+      type: object
+      properties:
+        id: { type: string }
+        lenderId: { type: [string, "null"] }
+        borrowerClientId: { type: string }
+        principalCents: { type: integer }
+        currency: { type: string }
+        purpose: { type: [string, "null"] }
+        tenureMonths: { type: integer }
+        interestRateBps: { type: integer }
+        status: { $ref: "#/components/schemas/LoanStatus" }
+        sanctionedAmountCents: { type: [integer, "null"] }
+        sanctionedAt: { type: [string, "null"], format: date-time }
+        disbursedAt: { type: [string, "null"], format: date-time }
+        rejectionReason: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
+    LoanDetail:
+      type: object
+      properties:
+        loan: { $ref: "#/components/schemas/Loan" }
+        borrower: { $ref: "#/components/schemas/Client" }
+        lender: { oneOf: [ { $ref: "#/components/schemas/Lender" }, { type: "null" } ] }
+    LoanCreateRequest:
+      type: object
+      required: [borrowerClientId, principal, tenureMonths, interestRatePct]
+      properties:
+        borrowerClientId: { type: string, minLength: 1 }
+        lenderId: { type: string }
+        principal: { type: number, exclusiveMinimum: 0, description: "Decimal major units; stored as cents" }
+        currency: { type: string, minLength: 1, maxLength: 10, default: USD }
+        purpose: { type: string, maxLength: 500 }
+        tenureMonths: { type: integer, minimum: 1, maximum: 600 }
+        interestRatePct: { type: number, minimum: 0, maximum: 100, description: "Percent; stored as basis points" }
+    LoanSanctionRequest:
+      type: object
+      required: [sanctionedAmount, interestRatePct, tenureMonths]
+      properties:
+        sanctionedAmount: { type: number, exclusiveMinimum: 0 }
+        interestRatePct: { type: number, minimum: 0, maximum: 100 }
+        tenureMonths: { type: integer, minimum: 1, maximum: 600 }
+        lenderId: { type: string }
+    Lender:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        contactEmail: { type: [string, "null"], format: email }
+        contactPhone: { type: [string, "null"] }
+        isActive: { type: boolean }
+        createdAt: { type: string, format: date-time }
+    LenderCreateRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        contactEmail: { type: string, format: email }
+        contactPhone: { type: string, maxLength: 40 }
+
+    # --- affiliates / commissions ---
+    Affiliate:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string, format: email }
+        referralCode: { type: string, example: "REF-7F3K9Q" }
+        commissionRateBps: { type: integer, description: "Basis points" }
+        status: { $ref: "#/components/schemas/AffiliateStatus" }
+        createdAt: { type: string, format: date-time }
+    AffiliateWithEarnings:
+      allOf:
+        - $ref: "#/components/schemas/Affiliate"
+        - type: object
+          properties:
+            earnedCents: { type: integer }
+            orderCount: { type: integer }
+    AffiliateDetail:
+      type: object
+      properties:
+        affiliate: { $ref: "#/components/schemas/Affiliate" }
+        commissions: { type: array, items: { $ref: "#/components/schemas/Commission" } }
+    AffiliateCreateRequest:
+      type: object
+      required: [name, email]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        email: { type: string, format: email }
+        commissionRatePct: { type: number, minimum: 0, maximum: 100, default: 5, description: "Percent; stored as bps" }
+    AffiliateUpdateRequest:
+      type: object
+      required: [name, email, commissionRatePct, status]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        email: { type: string, format: email }
+        commissionRatePct: { type: number, minimum: 0, maximum: 100 }
+        status: { $ref: "#/components/schemas/AffiliateStatus" }
+    Commission:
+      type: object
+      properties:
+        id: { type: string }
+        affiliateId: { type: string }
+        affiliateName: { type: string }
+        orderId: { type: string }
+        orderNumber: { type: [string, "null"] }
+        orderTotalCents: { type: integer }
+        commissionRateBps: { type: integer }
+        commissionCents: { type: integer }
+        currency: { type: string }
+        status: { $ref: "#/components/schemas/CommissionStatus" }
+        createdAt: { type: string, format: date-time }
+
+    # --- profile / smtp ---
+    Profile:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        name: { type: string }
+        phone: { type: [string, "null"] }
+        jobTitle: { type: [string, "null"] }
+        avatarUrl: { type: [string, "null"] }
+        role: { type: string }
+        createdAt: { type: string, format: date-time }
+    ProfileUpdateRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        phone: { type: string, maxLength: 50 }
+        jobTitle: { type: string, maxLength: 200 }
+        avatarUrl: { type: string, format: uri, maxLength: 2000 }
+    SmtpSettings:
+      type: object
+      description: Secrets (password / OAuth token) are never returned.
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        authMethod: { type: string, enum: [password, oauth2_google] }
+        smtpHost: { type: string }
+        smtpPort: { type: integer }
+        smtpSecure: { type: boolean }
+        smtpUsername: { type: string }
+        fromName: { type: string }
+        fromEmail: { type: string, format: email }
+        isActive: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    SmtpUpdateRequest:
+      type: object
+      required: [smtpHost, smtpPort, smtpUsername, smtpPassword, fromName, fromEmail]
+      properties:
+        smtpHost: { type: string, minLength: 1 }
+        smtpPort: { type: integer, minimum: 1, maximum: 65535 }
+        smtpSecure: { type: boolean, default: true }
+        smtpUsername: { type: string, minLength: 1 }
+        smtpPassword: { type: string, minLength: 1, description: "Encrypted at rest; never returned" }
+        fromName: { type: string, minLength: 1 }
+        fromEmail: { type: string, format: email }
+
+    # --- audit ---
+    ActivityLog:
+      type: object
+      properties:
+        id: { type: string }
+        actorId: { type: [string, "null"] }
+        actorType: { type: string, enum: [USER, CONTACT, LENDER, AFFILIATE, SERVICE, SYSTEM] }
+        actorName: { type: [string, "null"] }
+        action: { type: string, example: "loan.sanctioned" }
+        entityType: { type: string, example: "Loan" }
+        entityId: { type: [string, "null"] }
+        metadata: { type: [object, "null"] }
+        ipAddress: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }

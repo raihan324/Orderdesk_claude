@@ -22,12 +22,22 @@ import {
   createLoanInput,
   sanctionLoanInput,
   createLenderInput,
+  updateOwnLenderInput,
 } from "@/server/services/loan.service";
 import {
   affiliateService,
   createAffiliateInput,
   updateAffiliateInput,
+  updateOwnAffiliateInput,
 } from "@/server/services/affiliate.service";
+import { sendRolePortalInvite } from "@/server/mailer";
+import { apiKeyService, createApiKeyInput } from "@/server/services/api-key.service";
+import {
+  invoiceService,
+  createInvoiceInput,
+  issueInvoiceInput,
+  recordPaymentInput,
+} from "@/server/services/invoice.service";
 
 export async function createProductAction(formData: FormData) {
   const p = await requirePrincipal();
@@ -121,6 +131,51 @@ export async function inviteContactAction(formData: FormData) {
   redirect(`/clients/${clientId}?portal_invite=${emailed ? "sent" : "off"}`);
 }
 
+/* ----------------------------------------------------------- invoices */
+export async function createInvoiceFromOrderAction(formData: FormData) {
+  const p = await requirePrincipal();
+  const input = createInvoiceInput.parse({
+    orderId: formData.get("orderId"),
+    notes: formData.get("notes") || undefined,
+    dueAt: formData.get("dueAt") || undefined,
+  });
+  const invoice = await invoiceService.createFromOrder(p, input);
+  revalidatePath("/invoices");
+  redirect(`/invoices/${invoice.id}`);
+}
+
+export async function issueInvoiceAction(formData: FormData) {
+  const p = await requirePrincipal();
+  const input = issueInvoiceInput.parse({
+    invoiceId: formData.get("invoiceId"),
+    dueAt: formData.get("dueAt") || undefined,
+  });
+  const { emailed } = await invoiceService.issue(p, input);
+  revalidatePath(`/invoices/${input.invoiceId}`);
+  redirect(`/invoices/${input.invoiceId}?issued=${emailed ? "emailed" : "no_email"}`);
+}
+
+export async function recordInvoicePaymentAction(formData: FormData) {
+  const p = await requirePrincipal();
+  const input = recordPaymentInput.parse({
+    invoiceId: formData.get("invoiceId"),
+    amount: formData.get("amount"),
+    method: formData.get("method") || "BANK_TRANSFER",
+    reference: formData.get("reference") || undefined,
+    paidAt: formData.get("paidAt") || undefined,
+    note: formData.get("note") || undefined,
+  });
+  await invoiceService.recordPayment(p, input);
+  revalidatePath(`/invoices/${input.invoiceId}`);
+}
+
+export async function voidInvoiceAction(formData: FormData) {
+  const p = await requirePrincipal();
+  const id = String(formData.get("invoiceId"));
+  await invoiceService.voidInvoice(p, id);
+  revalidatePath(`/invoices/${id}`);
+}
+
 export async function createOrderAction(formData: FormData) {
   const p = await requirePrincipal();
   const clientId = String(formData.get("clientId"));
@@ -179,7 +234,27 @@ export async function updateProfileAction(formData: FormData) {
     jobTitle: formData.get("jobTitle") || undefined,
     avatarUrl: formData.get("avatarUrl") || undefined,
   });
-  revalidatePath("/settings");
+  revalidatePath("/settings/profile");
+}
+
+/* ------------------------------------------------- organization API keys */
+export async function createApiKeyAction(formData: FormData) {
+  const p = await requirePrincipal();
+  const input = createApiKeyInput.parse({
+    name: formData.get("name"),
+    role: formData.get("role") || "ADMIN",
+    expiresAt: formData.get("expiresAt") || undefined,
+  });
+  const { key, plaintext } = await apiKeyService.create(p, input);
+  revalidatePath("/settings/api-keys");
+  // Returned to the client so the plaintext can be shown exactly once.
+  return { plaintext, name: key.name };
+}
+
+export async function revokeApiKeyAction(formData: FormData) {
+  const p = await requirePrincipal();
+  await apiKeyService.revoke(p, String(formData.get("id")));
+  revalidatePath("/settings/api-keys");
 }
 
 /* ------------------------------------------------------------- loan module */
@@ -272,6 +347,78 @@ export async function setCommissionStatusAction(formData: FormData) {
   revalidatePath("/affiliates");
 }
 
+/* ----------------------------------------------- lender / affiliate portal */
+export async function inviteLenderPortalAction(formData: FormData) {
+  const p = await requirePrincipal();
+  const lenderId = String(formData.get("lenderId"));
+  let status = "sent";
+  try {
+    const lender = await loanService.invitePortal(p, lenderId);
+    const base = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+    try {
+      await sendRolePortalInvite({
+        to: lender.contactEmail!,
+        name: lender.name,
+        portalLabel: "lender",
+        signUpUrl: `${base}/sign-up`,
+        userId: p.kind === "INTERNAL" ? p.userId : undefined,
+      });
+    } catch {
+      status = "off";
+    }
+  } catch (e) {
+    status = e instanceof Error && e.message === "LENDER_EMAIL_REQUIRED" ? "no_email" : "failed";
+  }
+  revalidatePath("/lenders");
+  redirect(`/lenders?portal_invite=${status}`);
+}
+
+export async function inviteAffiliatePortalAction(formData: FormData) {
+  const p = await requirePrincipal();
+  const affiliateId = String(formData.get("affiliateId"));
+  let status = "sent";
+  try {
+    const affiliate = await affiliateService.invitePortal(p, affiliateId);
+    const base = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+    try {
+      await sendRolePortalInvite({
+        to: affiliate.email,
+        name: affiliate.name,
+        portalLabel: "affiliate",
+        signUpUrl: `${base}/sign-up`,
+        userId: p.kind === "INTERNAL" ? p.userId : undefined,
+      });
+    } catch {
+      status = "off";
+    }
+  } catch {
+    status = "failed";
+  }
+  revalidatePath(`/affiliates/${affiliateId}`);
+  redirect(`/affiliates/${affiliateId}?portal_invite=${status}`);
+}
+
+export async function updateOwnLenderAction(formData: FormData) {
+  const p = await requirePrincipal();
+  const input = updateOwnLenderInput.parse({
+    name: formData.get("name"),
+    contactEmail: formData.get("contactEmail") || "",
+    contactPhone: formData.get("contactPhone") || undefined,
+  });
+  await loanService.updateOwnLender(p, input);
+  revalidatePath("/portal/lender");
+}
+
+export async function updateOwnAffiliateAction(formData: FormData) {
+  const p = await requirePrincipal();
+  const input = updateOwnAffiliateInput.parse({
+    name: formData.get("name"),
+    email: formData.get("email"),
+  });
+  await affiliateService.updateOwnAffiliate(p, input);
+  revalidatePath("/portal/affiliate");
+}
+
 export async function updateSmtpSettingsAction(formData: FormData) {
   const p = await requirePrincipal();
   await smtpSettingsService.updateSettings(p, {
@@ -283,13 +430,13 @@ export async function updateSmtpSettingsAction(formData: FormData) {
     fromName: formData.get("fromName"),
     fromEmail: formData.get("fromEmail"),
   });
-  revalidatePath("/settings");
+  revalidatePath("/settings/smtp");
 }
 
 export async function disconnectSmtpAction() {
   const p = await requirePrincipal();
   await smtpSettingsService.disconnect(p);
-  revalidatePath("/settings");
+  revalidatePath("/settings/smtp");
 }
 
 export async function testSavedSmtpAction() {

@@ -3,7 +3,7 @@ import { eq, desc, sql } from "drizzle-orm";
 import type { PgTransaction } from "drizzle-orm/pg-core";
 import { db } from "@/db";
 import { affiliates, affiliateCommissions, orders } from "@/db/schema";
-import { authorize, type Principal } from "@/lib/auth/rbac";
+import { authorize, ForbiddenError, type Principal } from "@/lib/auth/rbac";
 import { writeAudit } from "@/server/audit";
 import { randomBytes } from "node:crypto";
 
@@ -24,6 +24,13 @@ export const updateAffiliateInput = z.object({
   status: z.enum(["ACTIVE", "SUSPENDED"]),
 });
 export type UpdateAffiliateInput = z.infer<typeof updateAffiliateInput>;
+
+// Affiliate portal self-service (name/email only; not rate or status).
+export const updateOwnAffiliateInput = z.object({
+  name: z.string().min(1, "Name required").max(200),
+  email: z.string().email("Valid email required"),
+});
+export type UpdateOwnAffiliateInput = z.infer<typeof updateOwnAffiliateInput>;
 
 /** Human-friendly unique referral code, e.g. "REF-7F3K9Q". */
 function genReferralCode(): string {
@@ -118,6 +125,56 @@ export const affiliateService = {
     if (!row) throw new Error("NOT_FOUND");
     await writeAudit(p, "affiliate.updated", "Affiliate", row.id, { status: row.status });
     return row;
+  },
+
+  /* --------------------------------------------- affiliate portal (self) */
+  /** The signed-in affiliate's own record + commissions (read-only). */
+  async selfDetail(p: Principal) {
+    if (p.kind !== "AFFILIATE") throw new ForbiddenError("affiliate.read");
+    authorize(p, "affiliate.read", { ownerAffiliateId: p.affiliateId });
+    const [affiliate] = await db.select().from(affiliates).where(eq(affiliates.id, p.affiliateId)).limit(1);
+    if (!affiliate) return null;
+    const commissions = await db
+      .select({
+        id: affiliateCommissions.id,
+        orderId: affiliateCommissions.orderId,
+        orderNumber: orders.orderNumber,
+        orderTotalCents: affiliateCommissions.orderTotalCents,
+        commissionRateBps: affiliateCommissions.commissionRateBps,
+        commissionCents: affiliateCommissions.commissionCents,
+        currency: affiliateCommissions.currency,
+        status: affiliateCommissions.status,
+        createdAt: affiliateCommissions.createdAt,
+      })
+      .from(affiliateCommissions)
+      .leftJoin(orders, eq(affiliateCommissions.orderId, orders.id))
+      .where(eq(affiliateCommissions.affiliateId, p.affiliateId))
+      .orderBy(desc(affiliateCommissions.createdAt));
+    return { affiliate, commissions };
+  },
+
+  async updateOwnAffiliate(p: Principal, input: UpdateOwnAffiliateInput) {
+    if (p.kind !== "AFFILIATE") throw new ForbiddenError("affiliate.read");
+    const [row] = await db
+      .update(affiliates)
+      .set({ name: input.name, email: input.email })
+      .where(eq(affiliates.id, p.affiliateId))
+      .returning();
+    await writeAudit(p, "affiliate.self_updated", "Affiliate", row.id, {});
+    return row;
+  },
+
+  /** Invite an affiliate to the affiliate portal; returns the row for emailing. */
+  async invitePortal(p: Principal, affiliateId: string) {
+    authorize(p, "affiliate.manage");
+    const [affiliate] = await db.select().from(affiliates).where(eq(affiliates.id, affiliateId)).limit(1);
+    if (!affiliate) throw new Error("NOT_FOUND");
+    await db
+      .update(affiliates)
+      .set({ hasPortalAccess: true, portalStatus: "INVITED" })
+      .where(eq(affiliates.id, affiliateId));
+    await writeAudit(p, "affiliate.portal_invited", "Affiliate", affiliateId, { email: affiliate.email });
+    return affiliate;
   },
 
   /* ----------------------------------------------------------- commissions */

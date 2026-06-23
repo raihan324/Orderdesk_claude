@@ -11,8 +11,8 @@ export async function writeAudit(
 ): Promise<void> {
   try {
     await db.insert(auditLogs).values({
-      actorId: actor ? ("userId" in actor ? actor.userId : actor.contactId) : null,
-      actorType: actor ? (actor.kind === "INTERNAL" ? "USER" : "CONTACT") : "SYSTEM",
+      actorId: actor ? actorIdOf(actor) : null,
+      actorType: actor ? actorTypeOf(actor) : "SYSTEM",
       actorName: actor?.name ?? null,
       action,
       entityType,
@@ -22,4 +22,18 @@ export async function writeAudit(
   } catch (err) {
     console.error("[audit] failed:", action, err);
   }
+}
+
+function actorIdOf(a: Principal): string {
+  if (a.kind === "INTERNAL") return a.userId;
+  if (a.kind === "PORTAL") return a.contactId;
+  if (a.kind === "LENDER") return a.lenderId;
+  if (a.kind === "AFFILIATE") return a.affiliateId;
+  return a.apiKeyId; // SERVICE
+}
+
+function actorTypeOf(a: Principal): string {
+  if (a.kind === "INTERNAL") return "USER";
+  if (a.kind === "PORTAL") return "CONTACT";
+  return a.kind; // "LENDER" | "AFFILIATE"
 }
