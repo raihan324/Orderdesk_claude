@@ -1,0 +1,86 @@
+name: Rollback
+
+# One-click redeploy of any previous commit/tag from the Actions tab. Because
+# deploys build on the VPS (no image registry), "rollback" = ship an older ref
+# and rebuild it. The on-VPS build is atomic: if it fails, the currently-running
+# container keeps serving — a broken rollback can't take the site down.
+#
+# Find the SHA to roll back to in the repo history or a prior Deploy run, then:
+#   Actions -> Rollback -> Run workflow -> ref = <sha-or-tag>, confirm = rollback
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git commit SHA or tag to deploy (e.g. 5622cff or v1.2.0)'
+        required: true
+      confirm:
+        description: 'Type "rollback" to confirm redeploying this ref to production'
+        required: true
+        default: ''
+
+concurrency:
+  group: deploy-production   # shares the deploy lock so it can't race a deploy
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    name: Redeploy a previous ref
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "rollback" ]; then
+            echo "Confirmation mismatch — type 'rollback' to proceed." >&2
+            exit 1
+          fi
+
+      - name: Checkout target ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref }}
+          fetch-depth: 0   # ensure arbitrary SHAs/tags resolve
+
+      - name: Show what is being deployed
+        run: |
+          echo "Rolling back to:"
+          git log -1 --oneline
+          git rev-parse HEAD
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          echo "${{ secrets.VPS_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Sync target ref to VPS (clean tree)
+        # --delete makes the deploy dir match the target ref EXACTLY, so files
+        # added by the bad newer version are removed before rebuild. The excludes
+        # protect server-only paths (.env etc.) from being touched or deleted.
+        run: |
+          rsync -az --delete --human-readable \
+            -e "ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=~/.ssh/known_hosts" \
+            --exclude '.git' \
+            --exclude 'node_modules' \
+            --exclude '.next' \
+            --exclude '.env' \
+            --exclude 'tsconfig.tsbuildinfo' \
+            ./ "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/docker/Orderdesk_claude/"
+
+      - name: Build & restart container
+        run: |
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'cd /docker/Orderdesk_claude && docker compose -f docker-compose.prod.yml up -d --build app && docker image prune -f >/dev/null 2>&1 || true'
+
+      - name: Health check
+        run: |
+          for i in $(seq 1 12); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://orderdesk.srv1699350.hstgr.cloud/sign-in || echo 000)
+            echo "attempt $i: HTTP $code"
+            if [ "$code" = "200" ]; then echo "Rollback healthy."; exit 0; fi
+            sleep 5
+          done
+          echo "Site did not return 200 after rollback." >&2
+          exit 1
