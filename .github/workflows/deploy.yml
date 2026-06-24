@@ -1,0 +1,82 @@
+name: Deploy
+
+# On every push to main: build-gate, then ship to the VPS over SSH and rebuild
+# the container in place (docker compose builds on the host).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}   # allow manual "Run workflow" from the Actions tab
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false   # never interrupt an in-flight deploy
+
+jobs:
+  build:
+    name: Build gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - name: Build
+        env:
+          AUTH_MODE: clerk
+          NEXT_PUBLIC_APP_URL: https://orderdesk.srv1699350.hstgr.cloud
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_Y2xlcmsuZXhhbXBsZS5jb20k
+          NEXT_PUBLIC_CLERK_SIGN_IN_URL: /sign-in
+          NEXT_PUBLIC_CLERK_SIGN_IN_FORCE_REDIRECT_URL: /dashboard
+          CLERK_SECRET_KEY: sk_test_ci_placeholder
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+        run: npm run build
+
+  deploy:
+    name: Ship to VPS
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          echo "${{ secrets.VPS_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Sync code to VPS
+        # Push the repo to the deploy dir. Exclude build/runtime artifacts and —
+        # critically — .env, which holds production secrets and lives only on the VPS.
+        # No --delete: never risk removing the server-only .env or other state.
+        run: |
+          rsync -az --human-readable \
+            -e "ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=~/.ssh/known_hosts" \
+            --exclude '.git' \
+            --exclude 'node_modules' \
+            --exclude '.next' \
+            --exclude '.env' \
+            --exclude 'tsconfig.tsbuildinfo' \
+            ./ "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/docker/Orderdesk_claude/"
+
+      - name: Build & restart container
+        run: |
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'cd /docker/Orderdesk_claude && docker compose -f docker-compose.prod.yml up -d --build app && docker image prune -f >/dev/null 2>&1 || true'
+
+      - name: Health check
+        # Give the app a moment, then confirm the public site answers through Traefik.
+        run: |
+          for i in $(seq 1 12); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://orderdesk.srv1699350.hstgr.cloud/sign-in || echo 000)
+            echo "attempt $i: HTTP $code"
+            if [ "$code" = "200" ]; then echo "Deploy healthy."; exit 0; fi
+            sleep 5
+          done
+          echo "Site did not return 200 after deploy." >&2
+          exit 1

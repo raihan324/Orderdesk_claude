@@ -1,0 +1,48 @@
+name: CI
+
+# Validate every push and PR: install, typecheck, and a full production build.
+# The build is the real gate — it catches the same errors a deploy would hit.
+on:
+  # main is covered by deploy.yml (which builds before it deploys), so CI here
+  # handles feature branches and PRs to avoid a duplicate build on main.
+  push:
+    branches-ignore: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref to save minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        # NEXT_PUBLIC_* are inlined at build time and AUTH_MODE drives the CSP,
+        # so they must be present. DATABASE_URL only needs to be set (postgres.js
+        # connects lazily — no DB is contacted during the build). These are
+        # throwaway CI values, NOT the production secrets.
+        env:
+          AUTH_MODE: clerk
+          NEXT_PUBLIC_APP_URL: https://orderdesk.srv1699350.hstgr.cloud
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_Y2xlcmsuZXhhbXBsZS5jb20k
+          NEXT_PUBLIC_CLERK_SIGN_IN_URL: /sign-in
+          NEXT_PUBLIC_CLERK_SIGN_IN_FORCE_REDIRECT_URL: /dashboard
+          CLERK_SECRET_KEY: sk_test_ci_placeholder
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+        run: npm run build

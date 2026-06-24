@@ -18,6 +18,9 @@ RUN apk add --no-cache libc6-compat
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# Ensure public/ exists even when the repo has no static assets, so the
+# runner stage's COPY of /app/public never fails.
+RUN mkdir -p public
 
 # NEXT_PUBLIC_* values are inlined into the client bundle at BUILD time, and
 # AUTH_MODE drives the Content-Security-Policy generated in next.config.ts.
@@ -27,7 +30,12 @@ ARG NEXT_PUBLIC_APP_URL
 ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 ARG NEXT_PUBLIC_CLERK_SIGN_IN_URL
 ARG NEXT_PUBLIC_CLERK_SIGN_IN_FORCE_REDIRECT_URL
-ENV AUTH_MODE=$AUTH_MODE \
+# Present only so module-load DATABASE_URL presence checks pass during `next build`.
+# postgres.js connects lazily, so no DB connection is made at build time; the real
+# value is supplied at runtime via env_file.
+ARG DATABASE_URL
+ENV DATABASE_URL=$DATABASE_URL \
+    AUTH_MODE=$AUTH_MODE \
     NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL \
     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY \
     NEXT_PUBLIC_CLERK_SIGN_IN_URL=$NEXT_PUBLIC_CLERK_SIGN_IN_URL \
