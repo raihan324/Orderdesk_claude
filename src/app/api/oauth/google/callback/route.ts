@@ -1,25 +1,35 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { requirePrincipal } from "@/lib/auth/session";
+import { can } from "@/lib/auth/rbac";
 import { exchangeCode, fetchEmail } from "@/lib/oauth/google";
-import { smtpSettingsService } from "@/server/services/smtp-settings.service";
+import { smtpSettingsService, orgSmtpService } from "@/server/services/smtp-settings.service";
 
 export const dynamic = "force-dynamic";
 
 const STATE_COOKIE = "od_google_oauth_state";
-
-function settingsUrl(query: string): URL {
-  return new URL(`/settings/smtp?${query}`, process.env.NEXT_PUBLIC_APP_URL);
-}
+const TARGET_COOKIE = "od_google_oauth_target"; // "user" (default) | "org"
 
 /**
  * Google redirects back here after consent. We verify the CSRF state, swap the
  * code for a refresh token, read which mailbox was connected, and persist it
- * (encrypted) against the current user. No password is ever stored.
+ * (encrypted) — against the current user, or the organization if the flow was
+ * started from the org settings. No password is ever stored.
  */
 export async function GET(request: NextRequest) {
   const principal = await requirePrincipal();
-  if (principal.kind !== "INTERNAL") {
-    return NextResponse.redirect(settingsUrl("oauth=forbidden"));
+  const isOrg = request.cookies.get(TARGET_COOKIE)?.value === "org";
+  const base = isOrg ? "/settings/org-smtp" : "/settings/smtp";
+  const settingsUrl = (query: string) => new URL(`${base}?${query}`, process.env.NEXT_PUBLIC_APP_URL);
+
+  const finish = (query: string) => {
+    const res = NextResponse.redirect(settingsUrl(query));
+    res.cookies.delete(STATE_COOKIE);
+    res.cookies.delete(TARGET_COOKIE);
+    return res;
+  };
+
+  if (principal.kind !== "INTERNAL" || (isOrg && !can(principal, "org.manage"))) {
+    return finish("oauth=forbidden");
   }
 
   const url = new URL(request.url);
@@ -27,26 +37,25 @@ export async function GET(request: NextRequest) {
   const returnedState = url.searchParams.get("state");
   const error = url.searchParams.get("error");
 
-  if (error) {
-    return NextResponse.redirect(settingsUrl(`oauth=google_denied`));
-  }
+  if (error) return finish("oauth=google_denied");
 
-  // CSRF check: the state we set on /start must match what Google echoed back.
   const expectedState = request.cookies.get(STATE_COOKIE)?.value;
   if (!code || !returnedState || !expectedState || returnedState !== expectedState) {
-    return NextResponse.redirect(settingsUrl("oauth=google_state_mismatch"));
+    return finish("oauth=google_state_mismatch");
   }
 
   try {
     const { refreshToken, accessToken } = await exchangeCode(code);
     const email = await fetchEmail(accessToken);
-    await smtpSettingsService.saveGoogleOAuth(principal, { refreshToken, email });
+    if (isOrg) {
+      await orgSmtpService.saveGoogleOAuth(principal, { refreshToken, email });
+    } else {
+      await smtpSettingsService.saveGoogleOAuth(principal, { refreshToken, email });
+    }
   } catch (err) {
     console.error("[oauth/google] callback failed:", err);
-    return NextResponse.redirect(settingsUrl("oauth=google_failed"));
+    return finish("oauth=google_failed");
   }
 
-  const res = NextResponse.redirect(settingsUrl("oauth=google_connected"));
-  res.cookies.delete(STATE_COOKIE); // one-time use
-  return res;
+  return finish("oauth=google_connected");
 }

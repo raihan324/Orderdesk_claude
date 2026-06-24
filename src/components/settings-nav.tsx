@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { User, Mail, KeyRound, type LucideIcon } from "lucide-react";
+import { User, Mail, KeyRound, Building2, type LucideIcon } from "lucide-react";
 
 type Item = { href: string; label: string; icon: LucideIcon };
 
@@ -11,9 +11,19 @@ const BASE: Item[] = [
   { href: "/settings/smtp", label: "Email & SMTP", icon: Mail },
 ];
 
-export function SettingsNav({ showApiKeys }: { showApiKeys: boolean }) {
+export function SettingsNav({
+  showApiKeys,
+  showOrgSmtp,
+}: {
+  showApiKeys: boolean;
+  showOrgSmtp: boolean;
+}) {
   const pathname = usePathname();
-  const items = showApiKeys ? [...BASE, { href: "/settings/api-keys", label: "API Keys", icon: KeyRound }] : BASE;
+  const items: Item[] = [
+    ...BASE,
+    ...(showOrgSmtp ? [{ href: "/settings/org-smtp", label: "Organization Email", icon: Building2 }] : []),
+    ...(showApiKeys ? [{ href: "/settings/api-keys", label: "API Keys", icon: KeyRound }] : []),
+  ];
 
   return (
     <nav className="flex shrink-0 gap-1 overflow-x-auto sm:w-52 sm:flex-col sm:overflow-visible">

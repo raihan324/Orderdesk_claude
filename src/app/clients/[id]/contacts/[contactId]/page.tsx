@@ -6,6 +6,7 @@ import { AppShell } from "@/components/app-shell";
 import { Card, Badge, Button, STATUS_STYLE } from "@/components/ui";
 import { clientService, contactTypes } from "@/server/services/client.service";
 import { inviteContactAction, updateContactAction } from "@/app/actions";
+import { SendMailButton } from "@/components/send-mail-button";
 
 export const dynamic = "force-dynamic";
 
@@ -64,6 +65,18 @@ export default async function ContactDetail({
           </p>
         </div>
         <div className="ml-auto flex items-center gap-2">
+          {!editing && (
+            <SendMailButton
+              to={contact.email}
+              subjectDefault={`Hello ${contact.name}`}
+              variables={[
+                { key: "contact.name", label: "Contact name", value: contact.name },
+                { key: "contact.firstName", label: "First name", value: contact.name.split(" ")[0] },
+                { key: "contact.jobTitle", label: "Job title", value: contact.jobTitle ?? "" },
+                { key: "client.name", label: "Client name", value: client.name },
+              ]}
+            />
+          )}
           {canManage && !editing && (
             <Link href={`${selfUrl}?edit=1`}>
               <Button variant="outline">

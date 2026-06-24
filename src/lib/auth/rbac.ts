@@ -54,6 +54,7 @@ export type Principal =
 export type Action =
   | "user.manage"
   | "apikey.manage"
+  | "org.manage"
   | "client.read"
   | "client.manage"
   | "salesrep.assign"
@@ -82,6 +83,9 @@ function internalScope(role: InternalRole, action: Action): "all" | "own" | fals
       return role === "SUPER_ADMIN" ? "all" : false;
     case "apikey.manage":
       // Organization API keys are minted/managed by SUPER_ADMIN only.
+      return role === "SUPER_ADMIN" ? "all" : false;
+    case "org.manage":
+      // Organization-level settings (e.g. org SMTP) — SUPER_ADMIN only.
       return role === "SUPER_ADMIN" ? "all" : false;
     case "client.read":
       return ALL.has(role) || ["SUPPORT_AGENT", "FINANCE_USER", "STAFF"].includes(role)
@@ -171,7 +175,7 @@ export function can(p: Principal, action: Action, resource?: Ownership): boolean
   if (p.kind === "SERVICE") {
     // Org API key: acts with its assigned role at "all" scope. Never allowed to
     // manage users or other API keys, even if minted with a SUPER_ADMIN role.
-    if (action === "user.manage" || action === "apikey.manage") return false;
+    if (action === "user.manage" || action === "apikey.manage" || action === "org.manage") return false;
     return internalScope(p.role, action) === "all";
   }
   const scope = internalScope(p.role, action);

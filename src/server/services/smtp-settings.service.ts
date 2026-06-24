@@ -2,7 +2,7 @@ import "server-only";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { userSmtpSettings } from "@/db/schema";
+import { userSmtpSettings, orgSmtpSettings } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
 import { authorize, type Principal } from "@/lib/auth/rbac";
 import { writeAudit } from "@/server/audit";
@@ -327,5 +327,166 @@ export const smtpSettingsService = {
       secure: row.smtpSecure,
       auth: { user: row.smtpUsername, pass },
     });
+  },
+};
+
+/* ------------------------------------------- organization SMTP (SUPER_ADMIN) */
+export type OrgSmtpDTO = {
+  id: string;
+  authMethod: "password" | "oauth2_google";
+  smtpHost: string;
+  smtpPort: number;
+  smtpSecure: boolean;
+  smtpUsername: string;
+  fromName: string;
+  fromEmail: string;
+  isActive: boolean;
+  updatedAt: Date;
+};
+
+function orgToDTO(row: typeof orgSmtpSettings.$inferSelect): OrgSmtpDTO {
+  const { smtpPassword, oauthRefreshToken, updatedByUserId, authMethod, ...rest } = row;
+  return { ...rest, authMethod: authMethod as "password" | "oauth2_google" };
+}
+
+export const orgSmtpService = {
+  /** The singleton org SMTP config (no secrets). Null if never configured. */
+  async get(): Promise<OrgSmtpDTO | null> {
+    const [row] = await db.select().from(orgSmtpSettings).limit(1);
+    return row ? orgToDTO(row) : null;
+  },
+
+  /** Create/update the single org SMTP row (password auth). SUPER_ADMIN only. */
+  async update(principal: Principal, input: unknown): Promise<OrgSmtpDTO> {
+    authorize(principal, "org.manage");
+    if (principal.kind !== "INTERNAL") throw new Error("FORBIDDEN");
+    const parsed = updateSmtpSettingsInput.parse(input);
+    const encrypted = encrypt(parsed.smtpPassword);
+    const now = new Date();
+
+    const [existing] = await db.select({ id: orgSmtpSettings.id }).from(orgSmtpSettings).limit(1);
+    const values = {
+      authMethod: "password" as const,
+      smtpHost: parsed.smtpHost,
+      smtpPort: parsed.smtpPort,
+      smtpSecure: parsed.smtpSecure,
+      smtpUsername: parsed.smtpUsername,
+      smtpPassword: encrypted,
+      oauthRefreshToken: null,
+      fromName: parsed.fromName,
+      fromEmail: parsed.fromEmail,
+      isActive: true,
+      updatedByUserId: principal.userId,
+      updatedAt: now,
+    };
+    let row;
+    if (existing) {
+      [row] = await db.update(orgSmtpSettings).set(values).where(eq(orgSmtpSettings.id, existing.id)).returning();
+    } else {
+      [row] = await db.insert(orgSmtpSettings).values(values).returning();
+    }
+    await writeAudit(principal, "org_smtp_updated", "OrgSMTPSettings", row.id, {
+      host: parsed.smtpHost,
+      authMethod: "password",
+    });
+    return orgToDTO(row);
+  },
+
+  /** Save a Google OAuth2 connection as the org mailbox. SUPER_ADMIN only. */
+  async saveGoogleOAuth(principal: Principal, input: { refreshToken: string; email: string }): Promise<OrgSmtpDTO> {
+    authorize(principal, "org.manage");
+    if (principal.kind !== "INTERNAL") throw new Error("FORBIDDEN");
+    const email = input.email.toLowerCase();
+    const encryptedToken = encrypt(input.refreshToken);
+    const now = new Date();
+
+    const [existing] = await db
+      .select({ id: orgSmtpSettings.id, fromName: orgSmtpSettings.fromName })
+      .from(orgSmtpSettings)
+      .limit(1);
+    const values = {
+      authMethod: "oauth2_google" as const,
+      smtpHost: "smtp.gmail.com",
+      smtpPort: 465,
+      smtpSecure: true,
+      smtpUsername: email,
+      smtpPassword: null,
+      oauthRefreshToken: encryptedToken,
+      fromEmail: email,
+      fromName: existing?.fromName || email,
+      isActive: true,
+      updatedByUserId: principal.userId,
+      updatedAt: now,
+    };
+    let row;
+    if (existing) {
+      [row] = await db.update(orgSmtpSettings).set(values).where(eq(orgSmtpSettings.id, existing.id)).returning();
+    } else {
+      [row] = await db.insert(orgSmtpSettings).values(values).returning();
+    }
+    await writeAudit(principal, "org_smtp_updated", "OrgSMTPSettings", row.id, { authMethod: "oauth2_google", email });
+    return orgToDTO(row);
+  },
+
+  /** Remove the org mailbox entirely. SUPER_ADMIN only. */
+  async disconnect(principal: Principal): Promise<void> {
+    authorize(principal, "org.manage");
+    await db.delete(orgSmtpSettings);
+    await writeAudit(principal, "org_smtp_disconnected", "OrgSMTPSettings", null, {});
+  },
+
+  /** Test arbitrary org SMTP credentials without saving. */
+  async testConnection(input: unknown): Promise<{ success: boolean }> {
+    return smtpSettingsService.testConnection(input);
+  },
+
+  /**
+   * Build the org mail transport + From header, or null if not configured/active.
+   * Used as the mailer fallback when a user has no personal mailbox.
+   */
+  async createTransport(): Promise<{ transport: Transporter; from: string } | null> {
+    const [row] = await db.select().from(orgSmtpSettings).limit(1);
+    if (!row || !row.isActive) return null;
+    const from = row.fromName ? `${row.fromName} <${row.fromEmail}>` : row.fromEmail;
+
+    if (row.authMethod === "oauth2_google") {
+      if (!row.oauthRefreshToken || !process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) return null;
+      let refreshToken: string;
+      try {
+        refreshToken = decrypt(row.oauthRefreshToken);
+      } catch {
+        console.error("[smtp] failed to decrypt org OAuth token");
+        return null;
+      }
+      const transport = nodemailer.createTransport({
+        host: "smtp.gmail.com",
+        port: 465,
+        secure: true,
+        auth: {
+          type: "OAuth2",
+          user: row.smtpUsername,
+          clientId: process.env.GOOGLE_CLIENT_ID,
+          clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+          refreshToken,
+        },
+      });
+      return { transport, from };
+    }
+
+    if (!row.smtpPassword) return null;
+    let pass: string;
+    try {
+      pass = decrypt(row.smtpPassword);
+    } catch {
+      console.error("[smtp] failed to decrypt org SMTP password");
+      return null;
+    }
+    const transport = nodemailer.createTransport({
+      host: row.smtpHost,
+      port: row.smtpPort,
+      secure: row.smtpSecure,
+      auth: { user: row.smtpUsername, pass },
+    });
+    return { transport, from };
   },
 };

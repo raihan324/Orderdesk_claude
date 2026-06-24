@@ -114,7 +114,20 @@ export const invoiceService = {
       .from(invoicePayments)
       .where(eq(invoicePayments.invoiceId, invoiceId))
       .orderBy(desc(invoicePayments.paidAt));
-    return { invoice, items, client, order, payments };
+    const recipient = await billingEmail(invoice.clientId);
+    const clientContacts = await db
+      .select()
+      .from(contacts)
+      .where(eq(contacts.clientId, invoice.clientId));
+    return {
+      invoice,
+      items,
+      client,
+      order,
+      payments,
+      recipientEmail: recipient?.email ?? null,
+      contacts: clientContacts,
+    };
   },
 
   /** Snapshot an order into a new DRAFT invoice with tax from the client default. */

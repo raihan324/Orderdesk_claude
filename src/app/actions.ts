@@ -15,7 +15,7 @@ import {
   updateOwnContactInput,
 } from "@/server/services/client.service";
 import { userService } from "@/server/services/user.service";
-import { smtpSettingsService } from "@/server/services/smtp-settings.service";
+import { smtpSettingsService, orgSmtpService } from "@/server/services/smtp-settings.service";
 import { profileService } from "@/server/services/profile.service";
 import {
   loanService,
@@ -439,6 +439,35 @@ export async function disconnectSmtpAction() {
   revalidatePath("/settings/smtp");
 }
 
+/* --------------------------------------- organization SMTP (SUPER_ADMIN) */
+function readSmtpForm(formData: FormData) {
+  return {
+    smtpHost: formData.get("smtpHost"),
+    smtpPort: formData.get("smtpPort"),
+    smtpSecure: formData.get("smtpSecure") === "on",
+    smtpUsername: formData.get("smtpUsername"),
+    smtpPassword: formData.get("smtpPassword"),
+    fromName: formData.get("fromName"),
+    fromEmail: formData.get("fromEmail"),
+  };
+}
+
+export async function updateOrgSmtpAction(formData: FormData) {
+  const p = await requirePrincipal();
+  await orgSmtpService.update(p, readSmtpForm(formData));
+  revalidatePath("/settings/org-smtp");
+}
+
+export async function testOrgSmtpAction(formData: FormData) {
+  await orgSmtpService.testConnection(readSmtpForm(formData));
+}
+
+export async function disconnectOrgSmtpAction() {
+  const p = await requirePrincipal();
+  await orgSmtpService.disconnect(p);
+  revalidatePath("/settings/org-smtp");
+}
+
 export async function testSavedSmtpAction() {
   const p = await requirePrincipal();
   if (p.kind !== "INTERNAL") throw new Error("FORBIDDEN");
@@ -462,6 +491,67 @@ export async function sendTestEmailAction(formData: FormData) {
   });
 
   await sendTestEmail({ ...input, userId: p.userId });
+}
+
+/** Richer schema for the advanced composer (CC/BCC, larger body, attachments). */
+const sendEmailFullInput = z.object({
+  to: z.string().email("Enter a valid recipient email"),
+  subject: z.string().min(1, "Subject required").max(300),
+  html: z.string().min(1, "Message body required").max(500_000),
+});
+
+const emailAttachmentSchema = z
+  .array(
+    z.object({
+      filename: z.string().min(1).max(255),
+      contentType: z.string().max(150).optional(),
+      contentBase64: z.string().min(1).max(20_000_000),
+    }),
+  )
+  .max(15);
+
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024; // 20 MB total
+
+/** Split a "a@x.com, b@y.com; c@z.com" field into validated email addresses. */
+function parseEmailList(raw: FormDataEntryValue | null): string[] {
+  if (!raw) return [];
+  const list = String(raw)
+    .split(/[,;\s]+/)
+    .map((e) => e.trim())
+    .filter(Boolean);
+  const bad = list.find((e) => !z.string().email().safeParse(e).success);
+  if (bad) throw new Error(`Invalid email address: ${bad}`);
+  return list;
+}
+
+/** Generic "send mail" used by the Send-mail button on entity detail pages. */
+export async function sendEmailAction(formData: FormData) {
+  const p = await requirePrincipal();
+  if (p.kind !== "INTERNAL") throw new Error("FORBIDDEN");
+
+  const input = sendEmailFullInput.parse({
+    to: formData.get("to"),
+    subject: formData.get("subject"),
+    html: formData.get("html"),
+  });
+
+  const cc = parseEmailList(formData.get("cc"));
+  const bcc = parseEmailList(formData.get("bcc"));
+
+  let attachments: { filename: string; content: string; contentType?: string }[] | undefined;
+  const rawAttachments = formData.get("attachments");
+  if (rawAttachments) {
+    const parsed = emailAttachmentSchema.parse(JSON.parse(String(rawAttachments)));
+    const totalBytes = parsed.reduce((sum, a) => sum + Math.ceil((a.contentBase64.length * 3) / 4), 0);
+    if (totalBytes > MAX_ATTACHMENT_BYTES) throw new Error("Attachments exceed the 20MB limit.");
+    attachments = parsed.map((a) => ({
+      filename: a.filename,
+      content: a.contentBase64,
+      contentType: a.contentType,
+    }));
+  }
+
+  await sendTestEmail({ ...input, cc, bcc, attachments, userId: p.userId });
 }
 
 export async function testSmtpConnectionAction(formData: FormData) {

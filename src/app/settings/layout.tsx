@@ -15,6 +15,7 @@ export default async function SettingsLayout({ children }: { children: React.Rea
   if (p.kind === "SERVICE") redirect("/sign-in");
 
   const showApiKeys = can(p, "apikey.manage");
+  const showOrgSmtp = can(p, "org.manage");
 
   return (
     <AppShell principal={p}>
@@ -22,7 +23,7 @@ export default async function SettingsLayout({ children }: { children: React.Rea
         <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
         <p className="mt-0.5 text-sm text-slate-500">Manage your profile, email, and integrations.</p>
         <div className="mt-6 flex flex-col gap-6 sm:flex-row">
-          <SettingsNav showApiKeys={showApiKeys} />
+          <SettingsNav showApiKeys={showApiKeys} showOrgSmtp={showOrgSmtp} />
           <div className="min-w-0 flex-1">{children}</div>
         </div>
       </div>

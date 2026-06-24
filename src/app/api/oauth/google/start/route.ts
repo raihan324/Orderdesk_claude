@@ -33,5 +33,6 @@ export async function GET() {
     path: "/",
     maxAge: 600, // 10 minutes to complete consent
   });
+  res.cookies.delete("od_google_oauth_target"); // ensure this is a USER-target flow
   return res;
 }

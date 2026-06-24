@@ -346,6 +346,23 @@ export const apiKeys = pgTable("api_keys", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+/* -------------------------------------- organization SMTP (single, SUPER_ADMIN) */
+export const orgSmtpSettings = pgTable("org_smtp_settings", {
+  id: text("id").primaryKey().$defaultFn(createId),
+  smtpHost: text("smtp_host").notNull(),
+  smtpPort: integer("smtp_port").notNull(),
+  smtpSecure: boolean("smtp_secure").notNull().default(true),
+  smtpUsername: text("smtp_username").notNull(),
+  authMethod: text("auth_method").notNull().default("password"), // password | oauth2_google
+  smtpPassword: text("smtp_password"), // encrypted; null for OAuth
+  oauthRefreshToken: text("oauth_refresh_token"), // encrypted; null for password auth
+  fromName: text("from_name").notNull(),
+  fromEmail: text("from_email").notNull(),
+  isActive: boolean("is_active").notNull().default(true),
+  updatedByUserId: text("updated_by_user_id").references(() => users.id),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 /* ---------------------------------------------- user SMTP settings (per-user) */
 export const userSmtpSettings = pgTable(
   "user_smtp_settings",

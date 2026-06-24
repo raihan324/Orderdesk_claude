@@ -10,6 +10,7 @@ import { updateAffiliateAction, inviteAffiliatePortalAction } from "@/app/action
 import { formatCents } from "@/lib/utils";
 import { AFFILIATE_STATUS_STYLE, COMMISSION_STATUS_STYLE } from "@/lib/status-badges";
 import { Mail } from "lucide-react";
+import { SendMailButton } from "@/components/send-mail-button";
 
 export const dynamic = "force-dynamic";
 
@@ -56,12 +57,25 @@ export default async function AffiliateDetail({
         <h1 className="text-xl font-semibold tracking-tight">{affiliate.name}</h1>
         <Badge className={AFFILIATE_STATUS_STYLE[affiliate.status]}>{affiliate.status}</Badge>
         {affiliate.hasPortalAccess && <Badge className="bg-indigo-100 text-indigo-700">Portal: {affiliate.portalStatus}</Badge>}
-        {mayManage && !affiliate.hasPortalAccess && (
-          <form action={inviteAffiliatePortalAction} className="ml-auto">
-            <input type="hidden" name="affiliateId" value={affiliate.id} />
-            <Button type="submit" variant="outline"><Mail size={14} /> Invite to portal</Button>
-          </form>
-        )}
+        <div className="ml-auto flex items-center gap-2">
+          <SendMailButton
+            to={affiliate.email}
+            subjectDefault={`Hello ${affiliate.name}`}
+            variables={[
+              { key: "affiliate.name", label: "Affiliate name", value: affiliate.name },
+              { key: "affiliate.code", label: "Referral code", value: affiliate.referralCode },
+              { key: "affiliate.earned", label: "Total earned", value: formatCents(earned) },
+              { key: "affiliate.paid", label: "Paid out", value: formatCents(paid) },
+              { key: "affiliate.outstanding", label: "Outstanding", value: formatCents(earned - paid) },
+            ]}
+          />
+          {mayManage && !affiliate.hasPortalAccess && (
+            <form action={inviteAffiliatePortalAction}>
+              <input type="hidden" name="affiliateId" value={affiliate.id} />
+              <Button type="submit" variant="outline"><Mail size={14} /> Invite to portal</Button>
+            </form>
+          )}
+        </div>
       </div>
       <p className="mt-0.5 text-sm text-slate-500">
         {affiliate.email} · code <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-700">{affiliate.referralCode}</span>

@@ -9,8 +9,14 @@ import { invoiceService, effectiveInvoiceStatus, PAYMENT_METHODS } from "@/serve
 import { issueInvoiceAction, recordInvoicePaymentAction, voidInvoiceAction } from "@/app/actions";
 import { formatCents } from "@/lib/utils";
 import { INVOICE_STATUS_STYLE } from "@/lib/status-badges";
+import { SendMailButton } from "@/components/send-mail-button";
 
 export const dynamic = "force-dynamic";
+
+const CONTACT_LABEL: Record<string, string> = {
+  OWNER: "Owner", DIRECTOR: "Director", MANAGER: "Manager", ACCOUNTS: "Accounts",
+  TECHNICAL: "Technical", PROCUREMENT: "Procurement", PRIMARY: "Primary", OTHER: "Other",
+};
 
 export default async function InvoiceDetail({
   params,
@@ -27,11 +33,31 @@ export default async function InvoiceDetail({
 
   const data = await invoiceService.detail(p, id);
   if (!data) notFound();
-  const { invoice, items, client, payments } = data;
+  const { invoice, items, client, payments, recipientEmail, contacts } = data;
   const mayManage = can(p, "invoice.manage", { ownerSalesRepId: client?.salesRepId });
   const effStatus = effectiveInvoiceStatus(invoice);
   const balanceCents = invoice.totalCents - invoice.amountPaidCents;
   const canPay = invoice.status === "ISSUED" || invoice.status === "PARTIALLY_PAID";
+
+  // Client contacts offered in the "To" dropdown of the email composer.
+  const mailRecipients = contacts
+    .filter((c) => c.email)
+    .map((c) => ({
+      email: c.email,
+      name: c.name,
+      label: `${c.name} · ${CONTACT_LABEL[c.type] ?? c.type} — ${c.email}`,
+    }));
+
+  // Record-level merge fields the user can drop into the email.
+  const mailVariables = [
+    { key: "invoice.number", label: "Invoice number", value: invoice.invoiceNumber },
+    { key: "invoice.total", label: "Invoice total", value: formatCents(invoice.totalCents, invoice.currency) },
+    { key: "invoice.balance", label: "Balance due", value: formatCents(balanceCents, invoice.currency) },
+    { key: "invoice.status", label: "Status", value: effStatus.replace("_", " ") },
+    { key: "invoice.dueDate", label: "Due date", value: invoice.dueAt ? new Date(invoice.dueAt).toLocaleDateString() : "—" },
+    { key: "invoice.issueDate", label: "Issue date", value: invoice.issuedAt ? new Date(invoice.issuedAt).toLocaleDateString() : "—" },
+    { key: "client.name", label: "Client name", value: client?.name ?? "" },
+  ];
 
   return (
     <AppShell principal={p}>
@@ -42,6 +68,17 @@ export default async function InvoiceDetail({
       <div className="flex items-center gap-3">
         <h1 className="font-mono text-xl font-semibold tracking-tight">{invoice.invoiceNumber}</h1>
         <Badge className={INVOICE_STATUS_STYLE[effStatus]}>{effStatus.replace("_", " ")}</Badge>
+        {mayManage && (
+          <div className="ml-auto">
+            <SendMailButton
+              to={recipientEmail ?? ""}
+              subjectDefault={`Invoice ${invoice.invoiceNumber}`}
+              label="Send mail"
+              recipients={mailRecipients}
+              variables={mailVariables}
+            />
+          </div>
+        )}
       </div>
       <p className="mt-0.5 text-sm text-slate-500">
         {client?.name} · {formatCents(invoice.totalCents, invoice.currency)} total

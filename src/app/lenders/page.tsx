@@ -8,6 +8,7 @@ import { Card, Table, THead, TBody, Th, Td, Badge, Button } from "@/components/u
 import { loanService } from "@/server/services/loan.service";
 import { createLenderAction, inviteLenderPortalAction } from "@/app/actions";
 import { Mail } from "lucide-react";
+import { SendMailButton } from "@/components/send-mail-button";
 
 export const dynamic = "force-dynamic";
 
@@ -69,12 +70,15 @@ export default async function LendersPage({
                 <Td><Badge className={l.isActive ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-500"}>{l.isActive ? "Active" : "Inactive"}</Badge></Td>
                 <Td>{l.hasPortalAccess ? <Badge className="bg-indigo-100 text-indigo-700">{l.portalStatus}</Badge> : <span className="text-xs text-slate-400">No access</span>}</Td>
                 <Td className="text-right">
-                  {!l.hasPortalAccess && (
-                    <form action={inviteLenderPortalAction}>
-                      <input type="hidden" name="lenderId" value={l.id} />
-                      <Button type="submit" variant="outline"><Mail size={13} /> Invite</Button>
-                    </form>
-                  )}
+                  <div className="flex justify-end gap-2">
+                    {l.contactEmail && <SendMailButton to={l.contactEmail} subjectDefault={`Hello ${l.name}`} label="Mail" />}
+                    {!l.hasPortalAccess && (
+                      <form action={inviteLenderPortalAction}>
+                        <input type="hidden" name="lenderId" value={l.id} />
+                        <Button type="submit" variant="outline"><Mail size={13} /> Invite</Button>
+                      </form>
+                    )}
+                  </div>
                 </Td>
               </tr>
             ))}

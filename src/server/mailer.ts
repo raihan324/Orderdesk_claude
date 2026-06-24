@@ -1,6 +1,6 @@
 import "server-only";
 import nodemailer, { type Transporter } from "nodemailer";
-import { smtpSettingsService } from "@/server/services/smtp-settings.service";
+import { smtpSettingsService, orgSmtpService } from "@/server/services/smtp-settings.service";
 
 /**
  * Lazily-created default SMTP transport (global config). Returns null when
@@ -58,6 +58,14 @@ async function getTransportForUser(
     }
   }
 
+  // Fallback chain: organization SMTP (configured by SUPER_ADMIN) → env global.
+  try {
+    const org = await orgSmtpService.createTransport();
+    if (org) return org;
+  } catch (err) {
+    console.error("[mailer] failed to load org SMTP settings:", err);
+  }
+
   const fallback = getTransport();
   return fallback ? { transport: fallback, from: globalFrom } : null;
 }
@@ -68,8 +76,12 @@ async function getTransportForUser(
  */
 export async function sendTestEmail(opts: {
   to: string;
+  cc?: string[];
+  bcc?: string[];
   subject: string;
   html: string;
+  /** Base64-encoded files to attach. */
+  attachments?: { filename: string; content: string; contentType?: string }[];
   userId?: string;
 }): Promise<{ from: string }> {
   const ctx = await getTransportForUser(opts.userId || null);
@@ -79,16 +91,24 @@ export async function sendTestEmail(opts: {
   // Plain-text fallback for clients that don't render HTML.
   const text = opts.html
     .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(p|div|li|h[1-6])>/gi, "\n")
+    .replace(/<\/(p|div|li|h[1-6]|tr)>/gi, "\n")
     .replace(/<[^>]+>/g, "")
     .trim();
 
   await transport.sendMail({
     from,
     to: opts.to,
+    cc: opts.cc?.length ? opts.cc : undefined,
+    bcc: opts.bcc?.length ? opts.bcc : undefined,
     subject: opts.subject,
     text,
     html: opts.html,
+    attachments: opts.attachments?.map((a) => ({
+      filename: a.filename,
+      content: a.content,
+      encoding: "base64",
+      contentType: a.contentType,
+    })),
   });
 
   return { from };
