@@ -27,7 +27,7 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=google-auth-app_app-network"
-      - "traefik.http.routers.orderdesk.rule=Host(`orderdesk.srv1699350.hstgr.cloud`)"
+      - "traefik.http.routers.orderdesk.rule=Host(`orderdesk.techwavesolutions.net`) || Host(`orderdesk.srv1699350.hstgr.cloud`)"
       - "traefik.http.routers.orderdesk.entrypoints=websecure"
       - "traefik.http.routers.orderdesk.tls=true"
       - "traefik.http.routers.orderdesk.tls.certresolver=letsencrypt"
