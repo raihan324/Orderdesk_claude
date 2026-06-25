@@ -1,14 +1,35 @@
 import type { NextConfig } from "next";
 
-// Clerk (when AUTH_MODE=clerk) loads its widget from *.clerk.accounts.dev, talks to
-// its FAPI over XHR/WebSocket, runs a web worker, serves avatars from img.clerk.com,
-// and uses a Cloudflare Turnstile iframe for bot protection. Whitelist exactly those.
+// Clerk (when AUTH_MODE=clerk) loads its widget + JS from its Frontend API host,
+// talks to it over XHR/WebSocket, runs a web worker, serves avatars from
+// img.clerk.com, and uses a Cloudflare Turnstile iframe for bot protection.
+//
+// The FAPI host differs per instance: dev uses *.clerk.accounts.dev; a production
+// instance uses your custom domain (e.g. clerk.techwavesolutions.net). It's encoded
+// in the publishable key (base64 of "<fapi-host>$"), so we derive it from the key —
+// this keeps the CSP correct for BOTH dev and prod with no hardcoding.
 const clerkMode = process.env.AUTH_MODE === "clerk";
+
+function clerkFapiOrigin(): string {
+  const pk = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || "";
+  const m = pk.match(/^pk_(?:live|test)_(.+)$/);
+  if (!m) return "";
+  try {
+    const host = Buffer.from(m[1], "base64").toString("utf8").replace(/\$+$/, "");
+    return host ? ` https://${host}` : "";
+  } catch {
+    return "";
+  }
+}
+
+const fapi = clerkMode ? clerkFapiOrigin() : "";
 const clerk = {
-  script: clerkMode ? " https://*.clerk.accounts.dev https://challenges.cloudflare.com" : "",
-  connect: clerkMode ? " https://*.clerk.accounts.dev" : "",
+  // Keep the *.clerk.accounts.dev wildcard so dev keys keep working even if the
+  // key can't be decoded; `fapi` adds the exact (prod custom-domain) host.
+  script: clerkMode ? `${fapi} https://*.clerk.accounts.dev https://challenges.cloudflare.com` : "",
+  connect: clerkMode ? `${fapi} https://*.clerk.accounts.dev` : "",
   img: clerkMode ? " https://img.clerk.com" : "",
-  worker: clerkMode ? " https://*.clerk.accounts.dev" : "",
+  worker: clerkMode ? `${fapi} https://*.clerk.accounts.dev` : "",
   frame: clerkMode ? " https://challenges.cloudflare.com" : "",
 };
 
