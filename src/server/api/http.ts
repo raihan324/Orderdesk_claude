@@ -63,6 +63,7 @@ function mapError(err: unknown): { status: number; body: unknown } {
     LENDER_EMAIL_REQUIRED: [409, "CONFLICT"],
     OVERPAYMENT: [409, "CONFLICT"],
     INVALID_AMOUNT: [422, "VALIDATION_ERROR"],
+    INVALID_SALES_REP: [422, "VALIDATION_ERROR"],
   };
   const hit = known[msg];
   if (hit) return { status: hit[0], body: { error: { code: hit[1], message: msg } } };

@@ -74,6 +74,14 @@ export const clientService = {
 
     // Reps own the clients they create; elevated principals may assign any rep.
     const salesRepId = elevated ? input.salesRepId || null : p.kind === "INTERNAL" ? p.userId : null;
+
+    // Validate an assigned rep exists, so a bad id returns a clean 422 instead of
+    // surfacing a raw Postgres foreign-key violation as a 500.
+    if (salesRepId) {
+      const [rep] = await db.select({ id: users.id }).from(users).where(eq(users.id, salesRepId)).limit(1);
+      if (!rep) throw new Error("INVALID_SALES_REP");
+    }
+
     const isB2B = input.type === "B2B";
 
     const [row] = await db
