@@ -67,12 +67,13 @@ export const clientService = {
    * (or leave unassigned); a Sales Rep may create only self-owned clients.
    */
   async create(p: Principal, input: CreateClientInput) {
-    if (p.kind !== "INTERNAL") throw new ForbiddenError("client.manage");
-    const elevated = can(p, "salesrep.assign"); // ADMIN / MANAGER / SUPER_ADMIN
-    if (!elevated && p.role !== "SALES_REP") throw new ForbiddenError("client.manage");
+    // Self-ownership lets a Sales Rep clear the capability check (they create
+    // self-owned clients); elevated internal roles AND API keys pass at "all" scope.
+    authorize(p, "client.manage", { ownerSalesRepId: p.kind === "INTERNAL" ? p.userId : null });
+    const elevated = can(p, "salesrep.assign"); // ADMIN / MANAGER / SUPER_ADMIN (incl. API keys)
 
-    // Reps can only create clients owned by themselves; elevated roles choose.
-    const salesRepId = elevated ? input.salesRepId || null : p.userId;
+    // Reps own the clients they create; elevated principals may assign any rep.
+    const salesRepId = elevated ? input.salesRepId || null : p.kind === "INTERNAL" ? p.userId : null;
     const isB2B = input.type === "B2B";
 
     const [row] = await db
